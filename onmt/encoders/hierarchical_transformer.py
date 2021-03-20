@@ -225,13 +225,13 @@ class HierarchicalTransformerEncoder(EncoderBase):
         
         # memory bank every thing we want to pass to the decoder
         # all tensors should have dim(1) be the batch size
-        memory_bank = (
-            high_level_repr,
-            low_level_repr,
-            pos_embs,
-            low_level_mask.transpose(0, 1),
-            high_level_mask[:, 0, :].unsqueeze(0).eq(float('-inf'))
-        )
+        memory_bank = {
+            'high_level_repr': high_level_repr,
+            'low_level_repr': low_level_repr,
+            'pos_embs': pos_embs,
+            'low_level_mask': low_level_mask.transpose(0, 1),
+            'high_level_mask': high_level_mask[:, 0, :].unsqueeze(0).eq(float('-inf'))
+        }
         
         # We average the low_level_repr representation to give a final encoding
         # and be inline with the onmt framework

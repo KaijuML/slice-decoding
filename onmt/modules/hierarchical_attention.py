@@ -1,8 +1,6 @@
 from ..utils.misc import aeq
 
 import torch
-import onmt
-
 
 
 class ContainsNaN(Exception):
@@ -12,7 +10,8 @@ class ContainsNaN(Exception):
 def _check_for_nan(tensor, msg=''):
     if (tensor!=tensor).any():
         raise ContainsNaN(msg)
-        
+
+
 def _check_sizes(tensor, *sizes):
     for dim, (s, _s) in enumerate(zip(tensor.shape, sizes)):
         assert s == _s, f'dim {dim} are not of equal sizes'
@@ -38,7 +37,6 @@ class AttentionScorer(torch.nn.Module):
             self.dim_key = dim
         else:
             raise ValueError('dim should a one or two ints')
-            
             
         self.attn_type = attn_type
         
@@ -149,22 +147,26 @@ class HierarchicalAttention(torch.nn.Module):
         
         source = source.unsqueeze(1)
 
-        # Unpacking memory_bank (we reassign memory_bank to optimize memory
-        # and minimize errors when copy/paste exisiting code)
+        # Unpacking memory_bank
+        high_level_repr = memory_bank['high_level_repr']
+        pos_embs = memory_bank['pos_embs']
+        low_level_mask = memory_bank['low_level_mask']
+        high_level_mask = memory_bank['high_level_mask']
+        low_level_repr = memory_bank['low_level_repr']
+
         # we transpose the batch_dim for the scoring compute
-        chunks, memory_bank, pos_embs, units_mask, chunk_mask = memory_bank  
-        chunks = chunks.transpose(0, 1)
-        memory_bank = memory_bank.transpose(0, 1)
+        high_level_repr = high_level_repr.transpose(0, 1)
+        low_level_repr = low_level_repr.transpose(0, 1)
         pos_embs = pos_embs.transpose(0, 1)
-        units_mask = units_mask.transpose(0, 1)
-        chunk_mask = chunk_mask.transpose(0, 1)
+        low_level_mask = low_level_mask.transpose(0, 1)
+        high_level_mask = high_level_mask.transpose(0, 1)
         
-#         _check_for_nan(chunks)
+#         _check_for_nan(high_level_repr)
 #         _check_for_nan(memory_bank)
 #         _check_for_nan(pos_embs)
         
         # Checks and balances
-        batch_size, source_l, dim = memory_bank.size()
+        batch_size, source_l, dim = low_level_repr.size()
         batch_, target_l, dim_ = source.size()
         aeq(batch_size, batch_)
         aeq(dim, dim_)
@@ -176,9 +178,9 @@ class HierarchicalAttention(torch.nn.Module):
         if self.use_pos:
             align_units = self.unit_scorer(source, pos_embs).squeeze(1)
         else:
-            align_units = self.unit_scorer(source, memory_bank).squeeze(1)
+            align_units = self.unit_scorer(source, low_level_repr).squeeze(1)
             
-        align_chunks = self.chunk_scorer(source, chunks)
+        align_chunks = self.chunk_scorer(source, high_level_repr)
         
         # we compute the softmax first on the unit level
         #   - we reshape so that each row is an entity
@@ -187,7 +189,7 @@ class HierarchicalAttention(torch.nn.Module):
         #   - we flatten the scores again
         _check_for_nan(align_units, 'align units scores')  # sanity check (1)
         align_units = align_units.view(batch_size, -1, self.ent_size)
-        align_units = align_units.masked_fill(units_mask, float('-inf'))
+        align_units = align_units.masked_fill(low_level_mask, float('-inf'))
         _check_for_nan(align_units, 'align units scores filled with -inf')  # sanity check (2)
         
         # tricky block
@@ -205,7 +207,7 @@ class HierarchicalAttention(torch.nn.Module):
         align_units = align_units.view(batch_size, 1, -1)
         
         # Now the second level of attention, on the <ent> tokens
-        align_chunks.masked_fill_(chunk_mask, -1)
+        align_chunks.masked_fill_(high_level_mask, -1)
         align_chunks = self.attn_func(align_chunks, -1)
 
         _check_for_nan(align_chunks, 'align_chunks after attn_func')
@@ -217,11 +219,9 @@ class HierarchicalAttention(torch.nn.Module):
         align_chunks_inflated = align_chunks.repeat_interleave(repeats=self.ent_size, dim=-1)
         align_vectors = align_chunks_inflated * align_units
         
-        #print(align_vectors.sum())
-        
         # each context vector c_t is the weighted average
         # over all the source hidden states
-        c = torch.bmm(align_vectors, memory_bank)
+        c = torch.bmm(align_vectors, low_level_repr)
 
         # concatenate
         concat_c = torch.cat([c, source], 2).view(batch_size*target_l, dim*2)
