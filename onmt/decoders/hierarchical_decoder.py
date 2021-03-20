@@ -80,6 +80,10 @@ class HierarchicalRNNDecoder(torch.nn.Module):
                 attn_type=copy_attn_type, attn_func=attn_func,
                 use_pos=use_cols_in_attention)
 
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
     def init_state(self, encoder_final):
         """
         Here we initialize the hidden state of the hierarchical_decoder
@@ -101,7 +105,7 @@ class HierarchicalRNNDecoder(torch.nn.Module):
         self.state["input_feed"] = self._start_input_feed.repeat(1, batch_size, 1)
 
         # Init a useless state, to debug tracking states
-        self.state['tracking'] = torch.zeros(1, batch_size, 1)
+        self.state['tracking'] = torch.zeros(1, batch_size, 1, device=self.device)
 
     def set_state(self, state):
         self.state = state

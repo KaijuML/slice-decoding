@@ -117,29 +117,28 @@ def block_eye(n, size):
     return (m1*m2).view(n*size, n*size).to(torch.uint8)
 
 
-def build_pad_mask(source, ent_size, pad_idx):
+def build_low_level_mask(source, ent_size, pad_idx):
     """
     [seq_len, n_ents, ent_size]
     To be used in attention mechanism in decoder
     """
-    mask = source[:, :, 0]
-    mask = (mask.transpose(0, 1)
-                  .squeeze()
-                  .contiguous()
-                  .view(source.size(1), -1, ent_size)
-                  .eq(pad_idx))
+    mask = (source[:, :, 0].transpose(0, 1)
+                           .squeeze()
+                           .contiguous()
+                           .view(source.size(1), -1, ent_size)
+                           .eq(pad_idx))
     mask[:, :, 0] = 1  # we also mask the <ent> token
     return mask
 
 
-def build_chunk_mask(lengths, ent_size):
+def build_high_level_mask(lengths, ent_size):
     """
     [bsz, n_ents, n_ents]
     Filled with -inf where self-attention shouldn't attend, a zeros elsewhere.
     """
     ones = lengths // ent_size
-    ones = sequence_mask(ones).unsqueeze(1).repeat(1, ones.max(), 1).to(lengths.device)
-    mask = torch.full(ones.shape, float('-inf')).to(lengths.device)
+    ones = sequence_mask(ones).unsqueeze(1).repeat(1, ones.max(), 1)
+    mask = torch.full(ones.shape, float('-inf'), device=lengths.device)
     mask.masked_fill_(ones, 0)
     return mask
     
@@ -149,9 +148,9 @@ class HierarchicalTransformerEncoder(EncoderBase):
     Two encoders, one on the unit level and one on the chunk level
     """
     def __init__(self, embeddings, dataset_config,
-                 units_layers=2, chunks_layers=2, 
-                 units_heads=2, chunks_heads=2,
-                 units_glu_depth=-1, chunks_glu_depth=-1,  
+                 low_level_layers=2, high_level_layers=2,
+                 low_level_heads=2, high_level_heads=2,
+                 units_glu_depth=-1, chunks_glu_depth=-1,
                  dim_feedforward=1000, dropout=.5):
         super().__init__()
         
@@ -159,16 +158,16 @@ class HierarchicalTransformerEncoder(EncoderBase):
         
         self.ent_size = dataset_config.entity_size
         
-        self.unit_encoder = TransformerEncoder(hidden_size=embeddings.embedding_size, 
-                                               heads=units_heads, 
-                                               num_layers=units_layers, 
-                                               dim_feedforward=dim_feedforward, 
+        self.unit_encoder = TransformerEncoder(hidden_size=embeddings.embedding_size,
+                                               heads=low_level_heads,
+                                               num_layers=low_level_layers,
+                                               dim_feedforward=dim_feedforward,
                                                glu_depth=units_glu_depth,
                                                dropout=dropout)
-        self.chunk_encoder = TransformerEncoder(hidden_size=embeddings.embedding_size, 
-                                                heads=chunks_heads,
-                                                num_layers=chunks_layers, 
-                                                dim_feedforward=dim_feedforward, 
+        self.chunk_encoder = TransformerEncoder(hidden_size=embeddings.embedding_size,
+                                                heads=high_level_heads,
+                                                num_layers=high_level_layers,
+                                                dim_feedforward=dim_feedforward,
                                                 glu_depth=chunks_glu_depth,
                                                 dropout=dropout)
     @classmethod
@@ -178,10 +177,10 @@ class HierarchicalTransformerEncoder(EncoderBase):
         return cls(
             embeddings=embeddings,
             dataset_config=dataset_config,
-            units_layers=opt.low_level_layers,
-            chunks_layers=opt.high_level_layers,
-            units_heads=opt.low_level_heads,
-            chunks_heads=opt.high_level_heads,
+            low_level_layers=opt.low_level_layers,
+            high_level_layers=opt.high_level_layers,
+            low_level_heads=opt.low_level_heads,
+            high_level_heads=opt.high_level_heads,
             dim_feedforward=opt.transformer_ff,
             units_glu_depth=opt.low_level_glu_depth,
             chunks_glu_depth=opt.high_level_glu_depth,
@@ -205,36 +204,37 @@ class HierarchicalTransformerEncoder(EncoderBase):
         assert seq_len == lengths.max()
         
         # We build the masks for self attention and decoding
-        eye = block_eye(n_ents, self.ent_size).to(src.device)
-        self_attn_mask = torch.full((seq_len, seq_len), float('-inf')).to(src.device)
-        self_attn_mask.masked_fill_(eye.to(src.device), 0)
-        unit_mask = build_pad_mask(src, self.ent_size, self.embeddings.word_padding_idx).to(src.device)
-        chunk_mask = build_chunk_mask(lengths, self.ent_size).to(src.device)
+        eye = block_eye(n_ents, self.ent_size)
+        self_attn_mask = torch.full((seq_len, seq_len), float('-inf'))
+        self_attn_mask.masked_fill_(eye, 0)
+        low_level_mask = build_low_level_mask(src, self.ent_size,
+                                              self.embeddings.word_padding_idx)
+        high_level_mask = build_high_level_mask(lengths, self.ent_size)
         
         # embs [seq_len, bs, hidden_size]
         embs, pos_embs = self.embeddings(src)
         _check_for_nan(embs, 'after embedding layer')
         _check_for_nan(pos_embs, 'after embedding layer')
         
-        # units [seq_len, bs, hidden_size]
-        units = self.unit_encoder(embs, mask=self_attn_mask)
+        # low_level_repr [seq_len, bs, hidden_size]
+        low_level_repr = self.unit_encoder(embs, mask=self_attn_mask.to(src.device))
 
-        # chunks & units_tokens [n_units, bs, hidden_size]
-        units_tokens = units[range(0, seq_len, self.ent_size), :, :]
-        chunks = self.chunk_encoder(units_tokens, mask=chunk_mask)
+        # high_level_repr  [n_units, bs, hidden_size]
+        high_level_repr = low_level_repr[range(0, seq_len, self.ent_size), :, :]
+        high_level_repr = self.chunk_encoder(high_level_repr, mask=high_level_mask)
         
         # memory bank every thing we want to pass to the decoder
         # all tensors should have dim(1) be the batch size
         memory_bank = (
-            chunks, 
-            units,
+            high_level_repr,
+            low_level_repr,
             pos_embs,
-            unit_mask.transpose(0, 1),
-            chunk_mask[:, 0, :].unsqueeze(0).eq(float('-inf'))
+            low_level_mask.transpose(0, 1),
+            high_level_mask[:, 0, :].unsqueeze(0).eq(float('-inf'))
         )
         
-        # We average the units representation to give a final encoding
+        # We average the low_level_repr representation to give a final encoding
         # and be inline with the onmt framework
-        encoder_final = chunks.mean(dim=0).unsqueeze(0)
+        encoder_final = high_level_repr.mean(dim=0).unsqueeze(0)
         
         return encoder_final, memory_bank, lengths

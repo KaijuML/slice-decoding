@@ -116,8 +116,8 @@ class DecodeStrategy(object):
         if device is None:
             device = torch.device('cpu')
 
-        self.alive_seq.to(device)
-        self.is_finished.to(device)
+        self.alive_seq = self.alive_seq.to(device)
+        self.is_finished = self.is_finished.to(device)
 
     def __len__(self):
         return self.alive_seq.shape[1]
