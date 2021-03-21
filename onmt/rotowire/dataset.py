@@ -2,14 +2,16 @@
 Here I create a custom RotoWire dataset object.
 TODO: multiprocessing + logging
 """
+from onmt.rotowire.config import RotowireConfig
+from onmt.rotowire.utils import FileIterable
 from torch.utils.data import Dataset
 from torchtext.vocab import Vocab
 from collections import Counter
-from onmt import rotowire
 
 import more_itertools
 import functools
 import torch
+import tqdm
 import json
 import os
 
@@ -44,18 +46,22 @@ class DataAlreadyExistsError(Exception):
     pass
 
 
-class RotoWire(Dataset):
+class RotoWireDataset(Dataset):
     """
     Custom RotoWire dataset.
     """
-    def __init__(self, examples, main_vocab, cols_vocab):
+    def __init__(self, examples, main_vocab, cols_vocab, config=None):
         
         self.main_vocab = main_vocab
         self.cols_vocab = cols_vocab
         
         self.examples = examples
-        
-        self.config = rotowire.config
+
+        if config is not None:
+            self.config = config
+        else:
+            self.config = RotowireConfig.from_defaults()
+
         self.elab_vocab = self.config.elaboration_vocab
         
     def get_vocabs(self):
@@ -111,62 +117,70 @@ class RotoWire(Dataset):
         
         path_to_data = os.path.join(dirs, f'{prefix}.examples.pt')
         path_to_vocabs = os.path.join(dirs, f'{prefix}.vocabs.pt')
+        path_to_config = os.path.join(dirs, f'{prefix}'.config.pt)
         
         if os.path.exists(path_to_data) and not overwrite:
             raise DataAlreadyExistsError(f'{path_to_data}')
         if os.path.exists(path_to_vocabs) and not overwrite:
-            raise DataAlreadyExistsError(f'{path_to_data}')
+            raise DataAlreadyExistsError(f'{path_to_vocabs}')
+        if os.path.exists(path_to_config) and not overwrite:
+            raise DataAlreadyExistsError(f'{path_to_config}')
                 
-        return path_to_data, path_to_vocabs
+        return {
+            'examples': path_to_data,
+            'vocabs': path_to_vocabs,
+            'config': path_to_config,
+        }
         
     def dump(self, prefix, overwrite=False):
     
-        path_to_data, path_to_vocabs = self.check_paths(prefix, overwrite)
+        paths = self.check_paths(prefix, overwrite)
         
         # saving examples
-        torch.save(self.examples, path_to_data)
+        torch.save(self.examples, paths['examples'])
         
         # saving vocabs (not including elaboration vocab, which is always fixed)
         vocabs = {'main_vocab': self.main_vocab, 'cols_vocab': self.cols_vocab}
-        torch.save(vocabs, path_to_vocabs)
+        torch.save(vocabs, paths['vocabs'])
+
+        # saving config
+        torch.save(self.config, paths['config'])
         
     @classmethod
     def load(cls, prefix):
         examples = torch.load(f'{prefix}.examples.pt')
         vocabs = torch.load(f'{prefix}.vocabs.pt')
-        return cls(examples, **vocabs)
-    
-    @staticmethod
-    def yield_from_file(filename):
-        if not os.path.exists(filename):
-            raise ValueError(f'File not found: {filename}')
-        
-        with open(filename, mode="r", encoding='utf8') as f:
-            for line in f:
-                yield json.loads(line)
+        config = torch.load(f'{prefix}.config.pt')
+        return cls(examples, **vocabs, config=config)
     
     @classmethod
-    def from_raw_json(cls, filename, max_vocab_size=None, num_threads=-1):
+    def from_raw_json(cls, filename, config=None):
         """
         TODO: Use multiprocessing to improve performances.
         """
+        if config is None:
+            config = RotowireConfig.from_defaults()
+
         examples = list()
         main_vocab = Counter()
         cols_vocab = Counter()
-        
-        for jsonline in cls.yield_from_file(filename):
+
+        iterable = FileIterable.from_filename(filename, fmt='jsonl')
+        desc = "Reading and formatting raw data"
+
+        for jsonline in tqdm.tqdm(iterable, desc=desc, total=len(iterable)):
             ex, sub_main_vocab, sub_cols_vocab = cls.parse_example(jsonline)
             
             examples.append(ex)
             main_vocab += sub_main_vocab
             cols_vocab += sub_cols_vocab
             
-        main_vocab = Vocab(main_vocab, max_size=max_vocab_size,
+        main_vocab = Vocab(main_vocab, max_size=config.vocab_size,
                            specials=['<unk>', '<pad>', '<s>', '</s>', '<ent>'])
         
         cols_vocab = Vocab(cols_vocab, specials=['<unk>', '<pad>', '<ent>'])
             
-        return cls(examples, main_vocab, cols_vocab)
+        return cls(examples, main_vocab, cols_vocab, config=config)
             
     @classmethod
     def parse_example(cls, jsonline):
