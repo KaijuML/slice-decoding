@@ -1,4 +1,4 @@
-from torch.utils.data import DataLoader, sampler
+from torch.utils.data import DataLoader, Sampler
 from torch.nn.utils.rnn import pad_sequence
 from typing import Union
 
@@ -57,7 +57,7 @@ class IterOnDevice:
             yield batch
 
 
-class InfiniteRandomSampler(sampler.Sampler):
+class InfiniteRandomSampler(Sampler):
     """
     Samples elements randomly, without stopping. 
     When all elements have been returned, start over.

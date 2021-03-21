@@ -10,6 +10,7 @@ DEFAULTS = {
     'vocab_size': int(1e4),
     'entity_size': 30,
     'num_primary_slices': 28,
+    'keep_na': False,
 }
 
 
@@ -29,21 +30,19 @@ class RotowireConfig:
         elaborations = ['<none>', '<eod>']
         self.elaboration_vocab = Vocab(Counter(elaborations))
 
+    def __repr__(self):
+        current_config = [f'{key}={getattr(self, key)}' for key in DEFAULTS]
+        return f'RotowireConfig({", ".join(current_config)})'
+
     @classmethod
     def from_defaults(cls):
-        return cls(
-            vocab_size=DEFAULTS['vocab_size'],
-            entity_size=DEFAULTS['entity_size'],
-            num_primary_slices=DEFAULTS['num_primary_slices'],
-        )
+        return cls(**DEFAULTS)
 
     @classmethod
     def from_opts(cls, opts):
-        return cls(
-            vocab_size=opts.vocab_size,
-            entity_size=opts.entity_size,
-            num_primary_slices=opts.num_primary_slices,
-        )
+        kwargs = {key: getattr(opts, key, value)
+                  for key, value in DEFAULTS.items()}
+        return cls(**kwargs)
 
     @staticmethod
     def add_rotowire_specific_args(parent_parser):
@@ -61,5 +60,7 @@ class RotowireConfig:
         group.add_argument("--vocab-size", type=int,
                            default=DEFAULTS['vocab_size'],
                            help="Size of the known vocabulary.")
+        group.add_argument('--keep-na', action='store_true',
+                           help="Do not discard N/A values in data.")
 
         return parser
