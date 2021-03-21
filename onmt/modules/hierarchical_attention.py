@@ -93,7 +93,7 @@ class AttentionScorer(torch.nn.Module):
             # (batch, t_len, s_len, d)
             wquh = torch.tanh(wq + uh)
 
-            return self.v(wquh.view(-1, dim)).view(tgt_batch, tgt_len, src_len)
+            return self.v(wquh.view(-1, src_dim)).view(tgt_batch, tgt_len, src_len)
 
         
 class HierarchicalAttention(torch.nn.Module):
@@ -123,7 +123,7 @@ class HierarchicalAttention(torch.nn.Module):
         # mlp wants it with bias, others no
         self.linear_out = torch.nn.Linear(self.chunks_dim * 2, 
                                           self.chunks_dim,
-                                          bias=(attn_type=="mlp"))
+                                          bias=(attn_type == "mlp"))
         
     def forward(self, source, memory_bank):
         """
