@@ -1,4 +1,5 @@
-from onmt.rotowire.dataset import RotoWire
+from onmt.rotowire import RotoWireDataset
+from onmt.rotowire import RotowireConfig
 
 
 import configargparse as argparse
@@ -23,14 +24,11 @@ def get_parser():
     group.add('--overwrite', action="store_true",
               help="Overwrite existing data if any.")
     
-    group = parser.add_argument_group('Data Processing')
-    group.add_argument('--vocab-size', dest="vocab_size", type=int, 
-                       help='Maximum size of the vocabulary. '\
-                            'By default, keep all tokens.')
-    
     group = parser.add_argument_group('Computing')
     group.add('--num-threads', dest='num_threads', type=int, default=1,
               help="Number of shards to build in parallel.")
+
+    parser = RotowireConfig.add_rotowire_specific_args(parser)
     
     return parser
 
@@ -40,10 +38,9 @@ def main(args=None):
     parser = get_parser()
     args = parser.parse_args(args) if args else parser.parse_args()
     
-    
-    dataset = RotoWire.from_raw_json(args.train_file, 
-                                     args.vocab_size,
-                                     args.num_threads)
+    config = RotowireConfig.from_opts(args)
+    dataset = RotoWireDataset.from_raw_json(args.train_file, config=config)
+
     dataset.dump(args.save_data, args.overwrite)
 
 
