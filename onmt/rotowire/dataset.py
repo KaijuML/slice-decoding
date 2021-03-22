@@ -264,7 +264,7 @@ class RotoWireDataset(Dataset):
         # Create and pad the contexts
         example['contexts'] = pad_sequence([
             torch.LongTensor(c) for c in raw_example['contexts']
-        ], padding_value=-1)
+        ], batch_first=True, padding_value=-1)
         
         # Adding all stuff that doesn't require processing
         example['src_map'] = raw_example['src_map']

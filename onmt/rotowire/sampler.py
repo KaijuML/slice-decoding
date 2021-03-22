@@ -48,6 +48,7 @@ class IterOnDevice:
             batch.sentences = cls.obj_to_device(batch.sentences, device)
             batch.alignments = cls.obj_to_device(batch.alignments, device)
             batch.elaborations = cls.obj_to_device(batch.elaborations, device)
+            batch.contexts = cls.obj_to_device(batch.contexts, device)
             batch.src_map = cls.obj_to_device(batch.src_map, device)
             batch.indices = cls.obj_to_device(batch.indices, device)
 
@@ -91,6 +92,7 @@ class Batch:
         self.sentences = fields.pop('sentences')
 
         self.elaborations = fields.pop('elaborations')
+        self.contexts = fields.pop('contexts')
 
         self.src_map = fields.pop('src_map')
         self.src_ex_vocab = fields.pop('src_ex_vocab')
@@ -173,6 +175,19 @@ def make_src_map(data):
     return alignment
 
 
+def make_contexts(data):
+    """
+    Using the same trick as make_src_map
+    """
+    n_sentences = max([t.size(0) for t in data])
+    n_entities = max([t.size(1) for t in data])
+    contexts = - torch.ones(n_sentences, len(data), n_entities)
+    for batch_idx, context in enumerate(data):
+        a, b = context.size(0), context.size(1)
+        contexts[:a, batch_idx, :b] = context
+    return contexts
+
+
 def collate_fn(examples):
     """
     Here are the operations need to collate a batch:
@@ -196,6 +211,8 @@ def collate_fn(examples):
 
     batch['elaborations'] = classic_pad(batch['elaborations'],
                                         return_lengths=False)
+
+    batch['contexts'] = make_contexts(batch['contexts'])
 
     batch['alignments'] = nested_pad(batch['alignments'],
                                      include_idxs=False)

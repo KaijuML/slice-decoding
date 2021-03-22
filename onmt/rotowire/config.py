@@ -60,6 +60,9 @@ class RotowireConfig:
         group.add_argument("--vocab-size", type=int,
                            default=DEFAULTS['vocab_size'],
                            help="Size of the known vocabulary.")
+        group.add_argument("--entity-size", type=int,
+                           default=DEFAULTS['entity_size'],
+                           help="Size of each entity.")
         group.add_argument('--keep-na', action='store_true',
                            help="Do not discard N/A values in data.")
 

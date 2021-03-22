@@ -8,25 +8,25 @@ import configargparse as argparse
 def get_parser():
     parser = argparse.ArgumentParser()
     
-    parser.add('-config', required=False,
-               is_config_file_arg=True, help='config file path')
-    parser.add('-save-config', dest='save_config', required=False,
-               is_write_out_config_file_arg=True,
-               help='config file save path')
+    parser.add_argument('--config', required=False,
+                        is_config_file_arg=True, help='config file path')
+    parser.add_argument('--save-config', dest='save_config', required=False,
+                        is_write_out_config_file_arg=True,
+                        help='config file save path')
     
     group = parser.add_argument_group('File System')
     group.add_argument('--train-file', dest='train_file', required=True,
-                        help='path to training set file. Should be .jsonl')
+                       help='path to training set file. Should be .jsonl')
     group.add_argument('--save-data', dest='save_data', required=True,
-                        help='Where to save the data, as a prefix. ' \
-                             '(We will save examples and vocabs in separate '\
-                             'files)')
-    group.add('--overwrite', action="store_true",
-              help="Overwrite existing data if any.")
+                       help='Where to save the data, as a prefix. '
+                            '(We will save examples and vocabs in separate '
+                            'files)')
+    group.add_argument('--overwrite', action="store_true",
+                       help="Overwrite existing data if any.")
     
     group = parser.add_argument_group('Computing')
-    group.add('--num-threads', dest='num_threads', type=int, default=1,
-              help="Number of shards to build in parallel.")
+    group.add_argument('--num-threads', dest='num_threads', type=int, default=1,
+                       help="Number of shards to build in parallel.")
 
     parser = RotowireConfig.add_rotowire_specific_args(parser)
     
@@ -46,5 +46,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-    
-    

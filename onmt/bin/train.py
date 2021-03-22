@@ -12,8 +12,7 @@ from onmt.models import build_model_saver
 from onmt.utils.logging import init_logger, logger
 from onmt.utils.parse import ArgumentParser
 
-from onmt.rotowire.sampler import build_dataset_iter
-from onmt.rotowire.dataset import RotoWire
+from onmt.rotowire import RotoWireDataset, build_dataset_iter
 import onmt.opts
 
 
@@ -52,7 +51,7 @@ def train(opt):
         model_opt = opt
         
     # Load dataset examples and vocabs
-    dataset = RotoWire.load(opt.data)
+    dataset = RotoWireDataset.load(opt.data)
     vocabs = dataset.get_vocabs()
     if checkpoint is not None:
         assert all(v == vocabs[k] for k, v in checkpoint['vocabs'].items())
