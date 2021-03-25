@@ -44,7 +44,10 @@ def _(sentence: list, vocab: Vocab, add_special_tokens: bool=False):
 
 
 class DataAlreadyExistsError(Exception):
-    pass
+    def __init__(self, filename):
+        skip = ' ' * (len(self.__class__.__name__) + 2)
+        msg = f'{filename}\n{skip}Consider using overwrite=True'
+        super(DataAlreadyExistsError, self).__init__(msg)
 
 
 class RotowireParser:
@@ -59,6 +62,19 @@ class RotowireParser:
 
     If you want to know more, self.parse_example has detailed comments.
     """
+
+    elaboration_mapping = {
+        # Good elaborations
+        'PRIMARY': '<primary>',
+        'EVENT': '<event>',
+        'TIME': '<time>',
+
+        # Weird elaborations
+        'CONFLICT': '<primary>',
+        'TOO_MANY': '<none>',
+        'NONE': '<none>'
+
+    }
 
     def __init__(self, config):
         if not isinstance(config, RotowireConfig):
@@ -88,14 +104,33 @@ class RotowireParser:
         # First list is cell values, second list is cell column names.
         input_sequence = [list(), list()]
 
-        for slice_dict in inputs:
+        # This mapping will be used to find out which slice corresponds to a
+        # specific elaboration for each entity.
+        entity_elaboration_idxs = dict()
 
+        for sidx, slice_dict in enumerate(inputs):
+
+            # Building the mapping from entity+elaboration --> slice index
+            entity = slice_dict['entity']
+            elaboration = self.elaboration_mapping[slice_dict['type']]
+            if entity not in entity_elaboration_idxs:
+                entity_elaboration_idxs[entity] = dict()
+
+            assert elaboration not in entity_elaboration_idxs[entity]
+            entity_elaboration_idxs[entity][elaboration] = sidx
+
+            # Starting all enitity with an <ent> token, to learn aggregation
             src_text = ['<ent>']
             src_cols = ['<ent>']
 
+            # Iterating over all (key, value) of the entity
             for key, value in slice_dict['data'].items():
                 if value == 'N/A' and not self.config.keep_na:
                     continue
+
+                # noinspection PyUnresolvedReferences
+                if self.config.lowercase:
+                    value = value.lower()
 
                 src_text.append(value.replace(' ', '_'))
                 src_cols.append(key)
@@ -143,9 +178,23 @@ class RotowireParser:
 
         for sentence in outputs:
 
-            # TODO: bring support for other type of elaborations
-            elaborations.append('<none>')
-            contexts.append(sentence['slices'])
+            elaboration = self.elaboration_mapping[sentence['type']]
+            elaborations.append(elaboration)
+
+            # If elaboration is <none> then we do not add the slice.
+            # The network will have to do with empty context.
+            if elaboration == '<none>':
+                contexts.append([])
+            else:
+                contexts.append(sentence['slices'])
+
+            # We also add the slice used for elaborations <time> & <event>
+            if elaboration in {'<time>', '<event>'}:
+                contexts[-1].extend([entity_elaboration_idxs[e][elaboration]
+                                     for e in sentence['slices']
+                                     if elaboration in entity_elaboration_idxs[e]])
+
+            assert len(contexts[-1]) <= 4  # Sanity check.
 
             # See self._clean_sentence.__doc__
             sentence_str = self._clean_sentence(
@@ -177,8 +226,7 @@ class RotowireParser:
 
         return example, main_vocab, cols_vocab
 
-    @staticmethod
-    def _clean_sentence(sentence, vocab):
+    def _clean_sentence(self, sentence, vocab):
         """
         In here, we slightly help the copy mechanism.
         When we built the source sequence, we took all multi-words value
@@ -186,6 +234,10 @@ class RotowireParser:
         the summaries, so that the copy mechanism knows it was a copy.
         It only happens with city names like "Los Angeles".
         """
+        # noinspection PyUnresolvedReferences
+        if self.config.lowercase:
+            sentence = sentence.lowercase()
+
         for token in vocab:
             if '_' in token:
                 token_no_underscore = token.replace('_', ' ')
@@ -292,11 +344,11 @@ class RotoWireDataset(Dataset):
         path_to_config = os.path.join(dirs, f'{prefix}.config.pt')
         
         if os.path.exists(path_to_data) and not overwrite:
-            raise DataAlreadyExistsError(f'{path_to_data}')
+            raise DataAlreadyExistsError(path_to_data)
         if os.path.exists(path_to_vocabs) and not overwrite:
-            raise DataAlreadyExistsError(f'{path_to_vocabs}')
+            raise DataAlreadyExistsError(path_to_vocabs)
         if os.path.exists(path_to_config) and not overwrite:
-            raise DataAlreadyExistsError(f'{path_to_config}')
+            raise DataAlreadyExistsError(path_to_config)
                 
         return {
             'examples': path_to_data,
@@ -342,8 +394,12 @@ class RotoWireDataset(Dataset):
         iterable = FileIterable.from_filename(filename, fmt='jsonl')
         desc = "Reading and formatting raw data"
 
-        for jsonline in tqdm.tqdm(iterable, desc=desc, total=len(iterable)):
-            ex, sub_main_vocab, sub_cols_vocab = parser.parse_example(jsonline)
+        for idx, jsonline in tqdm.tqdm(enumerate(iterable), desc=desc, total=len(iterable)):
+            try:
+                ex, sub_main_vocab, sub_cols_vocab = parser.parse_example(jsonline)
+            except Exception as err:
+                print(f'There was an error with line {idx}')
+                raise err
             
             examples.append(ex)
             main_vocab += sub_main_vocab

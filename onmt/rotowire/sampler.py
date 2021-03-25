@@ -178,13 +178,14 @@ def make_src_map(data):
 def make_contexts(data):
     """
     Using the same trick as make_src_map
+    Note that we are padding with -1 because 0 is a valid value.
     """
     n_sentences = max([t.size(0) for t in data])
     n_entities = max([t.size(1) for t in data])
-    contexts = - torch.ones(n_sentences, len(data), n_entities)
+    contexts = -torch.ones(n_sentences, n_entities, len(data), dtype=torch.long)
     for batch_idx, context in enumerate(data):
         a, b = context.size(0), context.size(1)
-        contexts[:a, batch_idx, :b] = context
+        contexts[:a, :b, batch_idx] = context
     return contexts
 
 

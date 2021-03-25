@@ -11,6 +11,7 @@ DEFAULTS = {
     'entity_size': 30,
     'num_primary_slices': 28,
     'keep_na': False,
+    'lowercase': False,
 }
 
 
@@ -27,7 +28,7 @@ class RotowireConfig:
                 setattr(self, key, value)
 
         # Note that the elab vocab also includes <unk> and <pad> on purpose.
-        elaborations = ['<none>', '<eod>']
+        elaborations = ['<primary>', '<time>', '<event>', '<none>', '<eod>']
         self.elaboration_vocab = Vocab(Counter(elaborations))
 
     def __repr__(self):
@@ -43,6 +44,12 @@ class RotowireConfig:
         kwargs = {key: getattr(opts, key, value)
                   for key, value in DEFAULTS.items()}
         return cls(**kwargs)
+
+    @classmethod
+    def show_defaults(cls):
+        tab = '    '
+        s = '\n'.join([f'{tab}{key}={value}' for key, value in DEFAULTS.items()])
+        print(f'RotowireCongigDefault(\n{s}\n)')
 
     @staticmethod
     def add_rotowire_specific_args(parent_parser):
@@ -65,5 +72,7 @@ class RotowireConfig:
                            help="Size of each entity.")
         group.add_argument('--keep-na', action='store_true',
                            help="Do not discard N/A values in data.")
+        group.add_argument('--lowercase', action='store_true',
+                           help="Lowercase everything.")
 
         return parser
