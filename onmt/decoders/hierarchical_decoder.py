@@ -1,7 +1,7 @@
 """Same as normal RNNDecoder but using hierarchical attention"""
 
+from onmt.modules import HierarchicalAttention, Aggregation
 from onmt.models.stacked_rnn import StackedLSTM
-from onmt.modules import HierarchicalAttention
 from onmt.utils.misc import aeq
 
 import torch
@@ -21,18 +21,43 @@ class HierarchicalRNNDecoder(torch.nn.Module):
     Custom RNN decoder. This decoder decodes sentence by sentence.
     For each sentence, the decoder first predicts which part of the data is
     relevant for its attention/copy mechanisms; then decodes all words until '.'
-    
+
     This decoder builds on top of the Hierarchical Encoder: its attention is
     also hierarchical and attends first to entities, then to their values.
-    
+
     Since examples don't have the same number of sentences to be decoded,
     that have been padded by None sentences. These are removed to avoid extra
     computation.
     """
-    def __init__(self, embeddings, dataset_config, num_layers,
-                 attn_type="general", attn_func="softmax", dropout=0.0,
-                 separate_copy_mechanism=False, copy_attn_type="general",
-                 use_cols_in_attention=True):
+    def __init__(self,
+                 embeddings=None,
+                 dataset_config=None,
+                 num_layers=2,
+                 dropout=0.0,
+
+                 attn_type="general",
+                 attn_func="softmax",
+                 copy_attn_type="general",
+                 use_cols_in_attention=True,
+                 separate_copy_mechanism=False,
+
+                 entity_aggregation_heads=1,
+                 entity_aggregation_do_proj=True,
+                 elaboration_dim=5):
+
+        self._check_arg_types_and_values(
+            embeddings=embeddings,
+            dataset_config=dataset_config,
+            num_layers=num_layers,
+            dropout=dropout,
+            attn_type=attn_type,
+            attn_func=attn_func,
+            copy_attn_type=copy_attn_type,
+            use_cols_in_attention=use_cols_in_attention,
+            separate_copy_mechanism=separate_copy_mechanism,
+            entity_aggregation_heads=entity_aggregation_heads,
+            entity_aggregation_do_proj=entity_aggregation_do_proj,
+            elaboration_dim=elaboration_dim)
 
         super().__init__()
 
@@ -53,8 +78,8 @@ class HierarchicalRNNDecoder(torch.nn.Module):
         self.embeddings = embeddings.value_embeddings
 
         # 2. Build the LSTM and initialize input feed.
-        self.register_parameter('_start_input_feed',
-            torch.nn.Parameter(torch.Tensor(1, 1, self.hidden_size)))
+        _input_feed = torch.nn.Parameter(torch.Tensor(1, 1, self.hidden_size))
+        self.register_parameter('_input_feed', _input_feed)
         self.rnn = StackedLSTM(self.num_layers,
                                self._input_size,
                                self.hidden_size,
@@ -80,6 +105,46 @@ class HierarchicalRNNDecoder(torch.nn.Module):
                 attn_type=copy_attn_type, attn_func=attn_func,
                 use_pos=use_cols_in_attention)
 
+        # 4.1 Set up the aggregation layer. It'll be used to aggregate the
+        # context entity representations
+        self.aggregation = Aggregation(dim=self.hidden_size,
+                                       heads=entity_aggregation_heads,
+                                       dropout=dropout,
+                                       do_proj=entity_aggregation_do_proj)
+
+        # 4.2 Set up the elaboration embedding layer
+        n_elaborations = len(dataset_config.elaboration_vocab)
+        self.elaboration_embeddings = torch.nn.Embedding(n_elaborations,
+                                                         elaboration_dim)
+
+        in_dim, out_dim = self.hidden_size + elaboration_dim, self.hidden_size
+        self.merge_entity_and_elaborations = torch.nn.Linear(in_dim, out_dim)
+
+        # Eventually initialize manually registered parameters
+        self._init_parameters_manually()
+
+    def _init_parameters_manually(self):
+        torch.nn.init.uniform_(self._input_feed, -1, 1)
+
+    def _check_arg_types_and_values(self, embeddings=None, dataset_config=None,
+            num_layers=2, dropout=0.0, attn_type="general", attn_func="softmax",
+            copy_attn_type="general", use_cols_in_attention=True,
+            separate_copy_mechanism=False, entity_aggregation_heads=1,
+            entity_aggregation_do_proj=True, elaboration_dim=5):
+
+        assert embeddings is not None
+        assert dataset_config is not None
+        assert isinstance(num_layers, int) and num_layers > 0
+        assert isinstance(dropout, float) and 0 <= dropout < 1
+        assert attn_type in {"dot", "general", "mlp"}
+        assert attn_func == 'softmax'
+        assert copy_attn_type in {"dot", "general", "mlp"}
+        assert isinstance(use_cols_in_attention, bool)
+        assert isinstance(separate_copy_mechanism, bool)
+        assert isinstance(entity_aggregation_heads, int) and entity_aggregation_heads > 0
+        assert isinstance(entity_aggregation_do_proj, bool)
+        assert isinstance(elaboration_dim, int) and elaboration_dim > 1
+
     @property
     def device(self):
         return next(self.parameters()).device
@@ -102,7 +167,7 @@ class HierarchicalRNNDecoder(torch.nn.Module):
         # Init the input feed with a learnt parameter, repeated for each
         # examples of the batch.
         batch_size = encoder_final.size(1)
-        self.state["input_feed"] = self._start_input_feed.repeat(1, batch_size, 1)
+        self.state["input_feed"] = self._input_feed.expand(-1, batch_size, -1)
 
         # Init a useless state, to debug tracking states
         self.state['tracking'] = torch.zeros(1, batch_size, 1, device=self.device)
@@ -144,9 +209,14 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             dropout=opt.dropout,
             separate_copy_mechanism=opt.separate_copy_mechanism,
             copy_attn_type=opt.copy_attn_type,
-            use_cols_in_attention=opt.use_cols_in_attention)
+            use_cols_in_attention=opt.use_cols_in_attention,
+            entity_aggregation_heads=opt.entity_aggregation_heads,
+            entity_aggregation_do_proj=opt.entity_aggregation_do_proj,
+            elaboration_dim=opt.elaboration_dim)
 
-    def forward(self, sentences=None, memory_bank=None, action=None):
+    def forward(self, sentences=None, memory_bank=None,
+                      contexts=None, elaborations=None,
+                      action=None):
         """
         Action should be from [decode_full, decode_once, predict_context]
         Set to None to force explicit choice.
@@ -174,6 +244,57 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             self.state['tracking'] += 1
 
             return dec_outs, attns
+
+        elif action == 'compute_context_representation':
+
+            # This action has two steps:
+            #   1) Aggregating the grounding entities
+            #   2) Embedding elaboration in latent space
+            # Both the aggregation and emb are cat + mlp to self.hidden_size
+
+            if memory_bank is None:  # or elaborations is None:
+                raise RuntimeError('memory bank & elaborations must be given '
+                                   'to compute context representations!')
+            if contexts is None:
+                err = 'contexts must be given to compute context repr...'
+                raise RuntimeError(err)
+
+            # 1.1 Shaping the mask for attention in the aggregation step
+
+            # Simply add the sentence dimension. Many ways to do this.
+            if contexts.dim() == 2:
+                contexts.unsqueeze(0)
+
+            n_sents, n_ents, batch_size = contexts.shape
+            contexts = contexts.view(n_sents * n_ents, batch_size)
+
+            # Compute the padding mask, using -1 as padding index
+            padding_mask = contexts == -1
+
+            # torch.gather do not support negative index, so we replace them by
+            # 0. It's not a problem, given that we still retain their locations
+            # and will ignore them later on.
+            contexts = contexts.masked_fill(padding_mask, 0)
+
+            # Create the index for torch.gather
+            index = contexts.unsqueeze(2).expand(-1, -1, self.aggregation.dim)
+
+            # 1.2 Gather & Aggregate grounding entities
+            entities = memory_bank['high_level_repr']
+            entities = entities.gather(dim=0, index=index)
+            entities = self.aggregation(entities, padding_mask, n_sents)
+
+            # Reshaping everything to its correct shape
+            entities = entities.view(n_sents, batch_size, self.aggregation.dim)
+
+            # 2.1 Embedding elaborations
+            # We skip the last one, because it is <eod>
+            elaborations = self.elaboration_embeddings(elaborations[:-1])
+
+            result = torch.cat([entities, elaborations], dim=2)
+            result = self.merge_entity_and_elaborations(result)
+
+            return result
 
         else:
             raise RuntimeError(f'Unknown decoder action: {action}')
@@ -245,4 +366,4 @@ class HierarchicalRNNDecoder(torch.nn.Module):
     @property
     def _input_size(self):
         """Using input feed by concatenating input with attention vectors."""
-        return self.embeddings.embedding_dim + self.hidden_size
+        return 3 * self.hidden_size

@@ -338,7 +338,12 @@ class Trainer(object):
                 # 2.1 Decode sentences
 
                 # 2.1.1 Compute slice representation for each sentence
-                # TODO: do it.
+                contexts = decoder(action="compute_context_representation",
+                                   memory_bank=memory_bank,
+                                   contexts=batch.contexts)
+
+                # sentence_indices maps each token to its sentence. We use it
+                # to gather contexts, one for each token.
 
                 # This batch object is used to comply with onmt's API
                 _batch = SentenceBatch(
@@ -350,9 +355,9 @@ class Trainer(object):
                 )
 
                 # 2.1.2 Actually decode sentences
-                outputs, attns = decoder(sentences=_batch.tgt,
-                                         memory_bank=memory_bank,
-                                         action='decode_full')
+                outputs, attns = decoder(action='decode_full',
+                                         sentences=_batch.tgt,
+                                         memory_bank=memory_bank,)
 
                 # 3. Compute losses based on decoder's hidden states.
 

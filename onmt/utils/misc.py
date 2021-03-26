@@ -14,13 +14,16 @@ def nwise(iterable, n=2):
     return zip(*iterables)
 
 
-def block_eye(n, size, dtype=torch.uint8):
+def block_eye(n, size, dtype=torch.uint8, device=None):
     """
     Create a block_diagonal matrix of n blocks, where each block
     is torch.ones(size, size)
     """
-    m1 = torch.ones(n, size, 1, size, dtype=dtype)
-    m2 = torch.eye(n, dtype=dtype).view(n, 1, n, 1)
+    if device is None:
+        device = torch.device('cpu')
+
+    m1 = torch.ones(n, size, 1, size, dtype=dtype, device=device)
+    m2 = torch.eye(n, dtype=dtype, device=device).view(n, 1, n, 1)
     return (m1*m2).view(n*size, n*size)
 
 

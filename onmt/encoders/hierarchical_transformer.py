@@ -1,6 +1,6 @@
 from onmt.modules.self_attention import MultiHeadSelfAttention
-from onmt.encoders.encoder import EncoderBase
 from onmt.utils.misc import sequence_mask, block_eye
+from onmt.encoders.encoder import EncoderBase
 import torch
 
 

@@ -78,6 +78,12 @@ def model_opts(parser):
                "output word  embeddings in the decoder.")
     group.add('--decoder_layers', type=int, default=1,
               help='Number of layers in the decoder.')
+    group.add('--entity_aggregation_heads', type=int, default=1,
+              help="Number of heads in the entity aggregation module.")
+    group.add('--entity_aggregation_do_proj', action='store_true',
+              help="Compute key/value projections in entity aggregation module.")
+    group.add('--elaboration_dim', type=int, default=5,
+              help="Dimension of elaborations latent space.")
 
     # Attention options
     group = parser.add_argument_group('Model (Attention)')
