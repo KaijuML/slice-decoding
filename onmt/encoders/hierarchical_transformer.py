@@ -1,6 +1,6 @@
 from onmt.modules.self_attention import MultiHeadSelfAttention
 from onmt.encoders.encoder import EncoderBase
-from onmt.utils.misc import sequence_mask
+from onmt.utils.misc import sequence_mask, block_eye
 import torch
 
 
@@ -105,16 +105,6 @@ class TransformerEncoder(torch.nn.Module):
             
     def update_dropout(self, dropout):
         for layer in self.layers: layer.update_dropout(dropout)
-            
-
-def block_eye(n, size):
-    """
-    Create a block_diagonal matrix of n blocks, where each block
-    is torch.eye(size)
-    """
-    m1 = torch.ones(n, size, 1, size)
-    m2 = torch.eye(n).view(n, 1, n, 1)
-    return (m1*m2).view(n*size, n*size).to(torch.uint8)
 
 
 def build_low_level_mask(source, ent_size, pad_idx):

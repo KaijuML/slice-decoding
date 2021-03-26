@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 
-import torch
-import random
+from itertools import tee
+
 import inspect
-from itertools import islice, repeat, tee
+import random
+import torch
 import os
 
 
@@ -13,28 +14,14 @@ def nwise(iterable, n=2):
     return zip(*iterables)
 
 
-def split_corpus(path, shard_size, default=None):
-    """yield a `list` containing `shard_size` line of `path`,
-    or repeatly generate `default` if `path` is None.
+def block_eye(n, size, dtype=torch.uint8):
     """
-    if path is not None:
-        return _split_corpus(path, shard_size)
-    else:
-        return repeat(default)
-
-
-def _split_corpus(path, shard_size):
-    """Yield a `list` containing `shard_size` line of `path`.
+    Create a block_diagonal matrix of n blocks, where each block
+    is torch.ones(size, size)
     """
-    with open(path, "rb") as f:
-        if shard_size <= 0:
-            yield f.readlines()
-        else:
-            while True:
-                shard = list(islice(f, shard_size))
-                if not shard:
-                    break
-                yield shard
+    m1 = torch.ones(n, size, 1, size, dtype=dtype)
+    m2 = torch.eye(n, dtype=dtype).view(n, 1, n, 1)
+    return (m1*m2).view(n*size, n*size)
 
 
 def aeq(*args):
