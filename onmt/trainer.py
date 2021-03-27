@@ -91,48 +91,16 @@ class BatchErrorHandler:
 
 class SentenceBatch:
     """
-    This container is used to compute the loss sentence by sentence.
-    We reuse most of onmt's API, which needs a batch. This batch simulates
-    a training to generate 1 sentence.
-    
-    The filter method is used to reduce batch size when an example as no
-    valid sentences left.
+    This container reuses onmt's API, to compute the loss on sentences.
     """
 
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
             setattr(self, key, value)
 
-        self.og_indices = self.indices.clone()
-        
     @property
     def batch_size(self):
         return len(self.indices)
-    
-    def filter(self, memory_bank, elaborations, decoder, idxs):
-        """
-        idxs represent batch indices with valid sentences. We make sure all
-        elements from self, memory_bank, elaborations and decoder.state
-        only keep these indices.
-        """
-        try:
-            if len(idxs) == 0:
-                raise RuntimeError('SentenceBatch will NOT filter ALL examples.')
-        except Exception as err:
-            print(self.og_indices)
-            raise err
-        
-        memory_bank = tuple(m.index_select(1, idxs) for m in memory_bank)
-        decoder.map_state(lambda state, dim: state.index_select(dim, idxs))
-        
-        self.src_map = self.src_map.index_select(1, idxs)
-        self.src_ex_vocab = [self.src_ex_vocab[idx] for idx in idxs]
-        self.tgt = self.tgt.index_select(1, idxs)
-        self.tgt_lengths = self.tgt_lengths.index_select(0, idxs)
-        self.alignment = self.alignment.index_select(1, idxs)
-        self.indices = self.indices.index_select(0, idxs)
-        
-        return memory_bank, elaborations.index_select(1, idxs)
 
 
 class Trainer(object):
@@ -340,10 +308,19 @@ class Trainer(object):
                 # 2.1.1 Compute slice representation for each sentence
                 contexts = decoder(action="compute_context_representation",
                                    memory_bank=memory_bank,
-                                   contexts=batch.contexts)
+                                   contexts=batch.contexts,
+                                   elaborations=batch.elaborations)
 
-                # sentence_indices maps each token to its sentence. We use it
-                # to gather contexts, one for each token.
+                # The sentence_indices are padded with zeros and first sent is
+                # denoted by 1. To use torch.gather effectively, we then add
+                # a fake context on contexts[0] which will be gathered on
+                # pad index, and move everything by 1.
+                fake_ctx = torch.zeros(1, contexts.size(1), contexts.size(2),
+                                       device=contexts.device)
+                contexts = torch.cat([fake_ctx, contexts], dim=0)
+                index = sentence_indices.unsqueeze(2).expand(-1, -1,
+                                                             contexts.size(2))
+                contexts = contexts.gather(dim=0, index=index)
 
                 # This batch object is used to comply with onmt's API
                 _batch = SentenceBatch(
@@ -357,6 +334,7 @@ class Trainer(object):
                 # 2.1.2 Actually decode sentences
                 outputs, attns = decoder(action='decode_full',
                                          sentences=_batch.tgt,
+                                         contexts=contexts,
                                          memory_bank=memory_bank,)
 
                 # 3. Compute losses based on decoder's hidden states.

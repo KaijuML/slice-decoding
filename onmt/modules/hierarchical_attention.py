@@ -160,11 +160,7 @@ class HierarchicalAttention(torch.nn.Module):
         pos_embs = pos_embs.transpose(0, 1)
         low_level_mask = low_level_mask.transpose(0, 1)
         high_level_mask = high_level_mask.transpose(0, 1)
-        
-#         _check_for_nan(high_level_repr)
-#         _check_for_nan(memory_bank)
-#         _check_for_nan(pos_embs)
-        
+
         # Checks and balances
         batch_size, source_l, dim = low_level_repr.size()
         batch_, target_l, dim_ = source.size()

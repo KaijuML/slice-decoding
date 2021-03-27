@@ -3,6 +3,29 @@ from onmt.utils.misc import block_eye, tile
 import torch
 
 
+class ContainsNaN(Exception):
+    pass
+
+
+def check_object_for_nan(obj):
+    if isinstance(obj, torch.nn.Module):
+        for name, tensor in obj.named_parameters():
+            if (tensor != tensor).any():
+                raise ContainsNaN(name)
+    elif isinstance(obj, torch.Tensor):
+        if (obj != obj).any():
+            raise ContainsNaN()
+    elif isinstance(obj, (list, tuple)):
+        for _obj in obj:
+            check_object_for_nan(_obj)
+    elif isinstance(obj, dict):
+        for key, value in obj.items():
+            try:
+                check_object_for_nan(value)
+            except ContainsNaN:
+                raise ContainsNaN(key)
+
+
 class ContextPredictor(torch.nn.Module):
     """
     Predicts a context from a decoder state.
@@ -43,6 +66,9 @@ class Aggregation(torch.nn.Module):
 
         self._init_parameters_manually()
 
+        # once the module is initialized, check for NaNs
+        check_object_for_nan(self)
+
     def _init_parameters_manually(self):
         torch.nn.init.uniform_(self.query, -1, 1)
 
@@ -70,6 +96,8 @@ class Aggregation(torch.nn.Module):
         mask = mask[range(0, n_sents * n_ents, n_ents)].unsqueeze(0)
         mask = mask.expand(batch_size, -1, -1)
 
+        # check_object_for_nan(mask)
+
         return ~mask
 
     def forward(self, entities, padding_mask, n_sents):
@@ -79,6 +107,9 @@ class Aggregation(torch.nn.Module):
         n_sents (int)
             Used to reshape and enhanced the padding_mask
         """
+        # check_object_for_nan(entities)
+        # check_object_for_nan(padding_mask)
+
         # Sanity check n°1
         sents_x_ents, batch_size, dim = entities.shape
         assert dim == self.dim
@@ -92,6 +123,8 @@ class Aggregation(torch.nn.Module):
         # Expanding query for all example in the batch and for all sentences
         query = self.query.expand(n_sents, batch_size, -1)
 
+        # check_object_for_nan(query)
+
         # Formatting the paddding_mask
         if padding_mask.shape == (sents_x_ents, batch_size):
             padding_mask = padding_mask.transpose(0, 1)
@@ -104,11 +137,15 @@ class Aggregation(torch.nn.Module):
         # attends its assigned entities (0-4, 5-8, 9-12, etc.)
         query_mask = self.make_context_query_mask(n_sents, n_ents, batch_size)
 
+        # check_object_for_nan(query_mask)
+
         # Merging both masks
         attn_mask = padding_mask | query_mask
 
         # Repeating for each head of the MultiHeadAttention layer
         attn_mask = tile(attn_mask, self.heads, 0)
+
+        # check_object_for_nan(attn_mask)
 
         # Maybe compute projected repr of keys and values
         if self._do_proj:
@@ -117,5 +154,30 @@ class Aggregation(torch.nn.Module):
         else:
             keys, vals = entities, entities
 
+        # check_object_for_nan(keys)
+        # check_object_for_nan(vals)
+
         # We are not returning attention scores.
-        return self.attention(query, keys, vals, attn_mask=attn_mask)[0]
+        result = self.attention(query, keys, vals, attn_mask=attn_mask)[0]
+
+        # Not that there could be some NaN in this tensor. This is expected as
+        # some sentences have zero grounding entities, which means that the
+        # attn_mask will be all -inf, leading to division by zero in softmax.
+        # We get those position and simply zero them out.
+        # The sanity check here is that the sum of NaNs should be exactly equal
+        # to the hidden_dim, else NaNs come from somewhere else.
+        nan_mask = (result != result).sum(dim=2)  # Getting rows with NaNs
+
+        # Extensive Sanity check
+        unique_vals = sorted(list(nan_mask.unique()))
+        if len(unique_vals) == 1 and unique_vals[0] not in {0, dim}:
+            raise ContainsNaN('Result of aggregation contains unexpected NaNs')
+        if len(unique_vals) == 2 and unique_vals != [0, dim]:
+            raise ContainsNaN('Result of aggregation contains unexpected NaNs')
+        elif len(unique_vals) > 2:
+            raise ContainsNaN('Result of aggregation contains unexpected NaNs')
+
+        result = result.masked_fill(nan_mask.ne(0).unsqueeze(2), 0)
+        check_object_for_nan(result)
+
+        return result
