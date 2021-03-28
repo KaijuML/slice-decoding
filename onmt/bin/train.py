@@ -39,13 +39,12 @@ def train(opt):
     
     # Load checkpoint if we resume from a previous training.
     if opt.train_from:
-        logger.info('Loading checkpoint from %s' % opt.train_from)
+        logger.info(f'Loading checkpoint & vocab from {opt.train_from}')
         checkpoint = torch.load(opt.train_from,
                                 map_location=lambda storage, loc: storage)
         model_opt = ArgumentParser.ckpt_model_opts(checkpoint["opt"])
         ArgumentParser.update_model_opts(model_opt)
         ArgumentParser.validate_model_opts(model_opt)
-        logger.info('Loading vocab from checkpoint at %s.' % opt.train_from)
     else:
         checkpoint = None
         model_opt = opt

@@ -184,9 +184,9 @@ def build_base_model(model_opt, vocabs, config, checkpoint=None, device_id=None)
     return model
 
 
-def build_model(model_opt, opt, vocabs, config, checkpoint):
-    logger.info('Building model...')
+def build_model(model_opt, opt, vocabs, config, checkpoint, verbose=True):
+    if verbose: logger.info('Building model...')
     device_id = 0 if opt.use_gpu else -1
     model = build_base_model(model_opt, vocabs, config, checkpoint, device_id)
-    logger.info(model)
+    if verbose: logger.info(model)
     return model
