@@ -291,49 +291,42 @@ class HierarchicalRNNDecoder(torch.nn.Module):
                 raise RuntimeError(err)
 
             # 1.1 Shaping the mask for attention in the aggregation step
-
-            # Simply add the sentence dimension. Many ways to do this.
-            if contexts.dim() == 2:
-                contexts.unsqueeze(0)
-
+            # batch.contexts maps every sentence to its grounding entities.
+            # E.g. [0, 1, -1, -1] means that the sentence is grounded by
+            # entity 0 and entity 1, and -1 is padding.
+            # Given that our encoder returns repr for all entities AND an
+            # repr for the game, we shift everything by +1. This result in
+            # -1 becoming 0, and selecting the game repr as padding. For
+            # sentences which are grounded in 4 non zero entities, we also
+            # add an extra column of zeros to all entities.
+            #
+            # Note that contexts have "two" batch sizes: the number of
+            # sentences and the actual batch_size. We reshape so that we only
+            # have one (the actual batch size) and the aggregation module
+            # will handle the padding on the resulting n_sents * n_ents dim.
             n_sents, n_ents, batch_size = contexts.shape
-            contexts = contexts.view(n_sents * n_ents, batch_size)
-
-            # check_object_for_nan(contexts)
-
-            # Compute the padding mask, using -1 as padding index
-            padding_mask = contexts == -1
-
-            # torch.gather do not support negative index, so we replace them by
-            # 0. It's not a problem, given that we still retain their locations
-            # and will ignore them later on.
-            contexts = contexts.masked_fill(padding_mask, 0)
-
-            # check_object_for_nan(contexts)
+            game_ctx = torch.zeros(n_sents, 1, batch_size,
+                                   device=self.device,
+                                   dtype=torch.long)
+            contexts = torch.cat([game_ctx, contexts + 1], dim=1)
+            contexts = contexts.view(n_sents * (n_ents+1), batch_size)
 
             # Create the index for torch.gather
             index = contexts.unsqueeze(2).expand(-1, -1, self.aggregation.dim)
 
             # 1.2 Gather & Aggregate grounding entities
-            entities = memory_bank['high_level_repr']
-            entities = entities.gather(dim=0, index=index)
-            entities = self.aggregation(entities, padding_mask, n_sents)
+            # All entities are also grounded in the game repr
+            entities = memory_bank['game_repr'], memory_bank['high_level_repr']
+            entities = torch.cat(entities, dim=0).gather(dim=0, index=index)
+            entities = self.aggregation(entities, n_sents)
 
-            # check_object_for_nan(entities)
-
-            # Reshaping everything to its correct shape
-            entities = entities.view(n_sents, batch_size, self.aggregation.dim)
-
-            # 2.1 Embedding elaborations
+            # 2 Embedding elaborations
             # We skip the last one, because it is <eod>
             elaborations = self.elaboration_embeddings(elaborations[:-1])
 
-            # check_object_for_nan(elaborations)
-
+            # Merging contexts + elaborations using mlp
             result = torch.cat([entities, elaborations], dim=2)
             result = self.merge_entity_and_elaborations(result)
-
-            # check_object_for_nan(result)
 
             return result
 

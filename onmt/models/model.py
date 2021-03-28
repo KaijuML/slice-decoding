@@ -51,6 +51,10 @@ class NMTModel(nn.Module):
                                       with_align=with_align)
         return dec_out, attns
 
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
     def update_dropout(self, dropout):
         self.encoder.update_dropout(dropout)
         self.decoder.update_dropout(dropout)

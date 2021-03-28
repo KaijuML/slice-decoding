@@ -96,56 +96,44 @@ class Aggregation(torch.nn.Module):
         mask = mask[range(0, n_sents * n_ents, n_ents)].unsqueeze(0)
         mask = mask.expand(batch_size, -1, -1)
 
-        # check_object_for_nan(mask)
-
         return ~mask
 
-    def forward(self, entities, padding_mask, n_sents):
+    def forward(self, entities, n_sents):
         """
+        INPUTS:
+        -------
+        entities (Tensor) [n_sents * n_ents, batch_size, dim]
+            The list of grounding entities for each sentence of each example.
+            They will be aggregated to return one repr per sentence per ex.
+
         padding_mask (BoolTensor) [n_sents * n_ents, batch_size, dim]
             positions with True won't be attended to.
+
         n_sents (int)
             Used to reshape and enhanced the padding_mask
+
+        OUTPUTS:
+        --------
+        entities (Tensor) [n_sents, batch_size, dim]
         """
-        # check_object_for_nan(entities)
-        # check_object_for_nan(padding_mask)
 
         # Sanity check n°1
         sents_x_ents, batch_size, dim = entities.shape
         assert dim == self.dim
 
         # Sanity check n°2
-        _sents_x_ents, _batch_size = padding_mask.shape
-        assert _batch_size == batch_size and _sents_x_ents == sents_x_ents
-
+        assert sents_x_ents % n_sents == 0
         n_ents = sents_x_ents // n_sents
 
         # Expanding query for all example in the batch and for all sentences
         query = self.query.expand(n_sents, batch_size, -1)
 
-        # check_object_for_nan(query)
-
-        # Formatting the paddding_mask
-        if padding_mask.shape == (sents_x_ents, batch_size):
-            padding_mask = padding_mask.transpose(0, 1)
-        padding_mask = padding_mask.unsqueeze(1).expand(-1, n_sents, -1)
-
-        # Sanity check n°3
-        assert padding_mask.shape == (batch_size, n_sents, sents_x_ents)
-
         # Building mask for the multiple queries, so that each query only
         # attends its assigned entities (0-4, 5-8, 9-12, etc.)
-        query_mask = self.make_context_query_mask(n_sents, n_ents, batch_size)
-
-        # check_object_for_nan(query_mask)
-
-        # Merging both masks
-        attn_mask = padding_mask | query_mask
+        attn_mask = self.make_context_query_mask(n_sents, n_ents, batch_size)
 
         # Repeating for each head of the MultiHeadAttention layer
         attn_mask = tile(attn_mask, self.heads, 0)
-
-        # check_object_for_nan(attn_mask)
 
         # Maybe compute projected repr of keys and values
         if self._do_proj:
@@ -154,30 +142,5 @@ class Aggregation(torch.nn.Module):
         else:
             keys, vals = entities, entities
 
-        # check_object_for_nan(keys)
-        # check_object_for_nan(vals)
-
         # We are not returning attention scores.
-        result = self.attention(query, keys, vals, attn_mask=attn_mask)[0]
-
-        # Not that there could be some NaN in this tensor. This is expected as
-        # some sentences have zero grounding entities, which means that the
-        # attn_mask will be all -inf, leading to division by zero in softmax.
-        # We get those position and simply zero them out.
-        # The sanity check here is that the sum of NaNs should be exactly equal
-        # to the hidden_dim, else NaNs come from somewhere else.
-        nan_mask = (result != result).sum(dim=2)  # Getting rows with NaNs
-
-        # Extensive Sanity check
-        unique_vals = sorted(list(nan_mask.unique()))
-        if len(unique_vals) == 1 and unique_vals[0] not in {0, dim}:
-            raise ContainsNaN('Result of aggregation contains unexpected NaNs')
-        if len(unique_vals) == 2 and unique_vals != [0, dim]:
-            raise ContainsNaN('Result of aggregation contains unexpected NaNs')
-        elif len(unique_vals) > 2:
-            raise ContainsNaN('Result of aggregation contains unexpected NaNs')
-
-        result = result.masked_fill(nan_mask.ne(0).unsqueeze(2), 0)
-        check_object_for_nan(result)
-
-        return result
+        return self.attention(query, keys, vals, attn_mask=attn_mask)[0]

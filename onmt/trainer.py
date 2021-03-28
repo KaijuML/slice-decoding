@@ -9,11 +9,12 @@
           users of this library) for the strategy things we do.
 """
 
-import torch
-import traceback
 
+from onmt.utils.misc import check_object_for_nan
 from onmt.utils.logging import logger
+
 import onmt.utils
+import torch
 
 
 def build_trainer(opt, model, vocabs, optim, model_saver=None):
@@ -59,16 +60,17 @@ def build_trainer(opt, model, vocabs, optim, model_saver=None):
 
 
 class BatchError(Exception):
-    base_msg = '''
-        There was an error at iteration {}.
-        You can reproduce the error by manually running the training loop
-        on the following batches:
-    '''
+    base_msg = \
+        '''
+        There was an error at iteration {} (counting from 0).
+        You may be able to reproduce the error by manually running the
+        training loop on the following batches:
+        '''
 
     def __init__(self, step, indices):
-        msg = self.base_msg.format(step)
+        msg = self.base_msg.format(step).strip() + '\n'
         for b_indices in indices:
-            msg += f'{b_indices}\n'
+            msg += f'\t{b_indices}\n'
         super().__init__(msg)
 
 
@@ -269,6 +271,10 @@ class Trainer(object):
             self.model_saver.save(step, moving_average=self.moving_average)
         return total_stats
 
+    @property
+    def device(self):
+        return self.model.device
+
     def _gradient_accumulation(self, true_batches, total_stats, report_stats):
         
         # Zeroing gradient before iterating through batches
@@ -284,7 +290,7 @@ class Trainer(object):
                 
                 # 1. Encode the entire input table. Both primary entities
                 #    and additional entities are encoded here.
-                enc_state, memory_bank, lengths = self.model.encoder(*batch.src)
+                memory_bank = self.model.encoder(*batch.src, batch.n_primaries)
 
                 # 2. Decode sentence by sentence
                 # Note that from the decoder's POV, it's like decoding one long
@@ -298,7 +304,7 @@ class Trainer(object):
 
                 # 2.0 Initialize decoder's hidden state with the encoder out.
                 decoder = self.model.decoder
-                decoder.init_state(enc_state)
+                decoder.init_state(memory_bank['game_repr'])
 
                 # Extract sentences and token to sentence index mapping
                 sentences, sentence_starts, sentence_indices = batch.sentences
@@ -363,9 +369,15 @@ class Trainer(object):
             # Compute backward pass for each batch, using the three losses
             self.optim.backward(self._merge_losses(losses))
 
+        # Sanity check before updating weights
+        check_object_for_nan(self.model)
+
         # After going through all batches, update parameters
         self.optim.step()
-        
+
+        # Sanity check after updating weigths
+        check_object_for_nan(self.model)
+
     def _merge_losses(self, loss_dict):
         """
         TODO: compute an actual weighted average of the losses.
@@ -377,7 +389,11 @@ class Trainer(object):
 
         w = self.context_loss_lambda
 
-        return (1 - w) * main_loss + w * elab_loss
+        final_loss = (1 - w) * main_loss + w * elab_loss
+
+        logger.info(f'{main_loss=} {final_loss=}')
+
+        return final_loss
 
     def _start_report_manager(self, start_time=None):
         """
