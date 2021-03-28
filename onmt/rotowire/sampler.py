@@ -51,6 +51,7 @@ class IterOnDevice:
             batch.contexts = cls.obj_to_device(batch.contexts, device)
             batch.src_map = cls.obj_to_device(batch.src_map, device)
             batch.indices = cls.obj_to_device(batch.indices, device)
+            batch.n_primaries = cls.obj_to_device(batch.n_primaries, device)
 
     def __iter__(self):
         for batch in self.iterable:
@@ -90,6 +91,8 @@ class Batch:
     def __init__(self, fields):
         self.src = fields.pop('src')
         self.sentences = fields.pop('sentences')
+
+        self.n_primaries = fields.pop('n_primaries')
 
         self.elaborations = fields.pop('elaborations')
         self.contexts = fields.pop('contexts')
@@ -221,5 +224,6 @@ def collate_fn(examples):
     batch['src_map'] = make_src_map(batch['src_map'])
 
     batch['indices'] = torch.LongTensor(batch['indices'])
+    batch['n_primaries'] = torch.LongTensor(batch['n_primaries'])
 
     return Batch(batch)

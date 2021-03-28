@@ -1,16 +1,6 @@
+from onmt.utils.misc import sequence_mask, block_eye, check_object_for_nan
 from onmt.modules.self_attention import MultiHeadSelfAttention
-from onmt.utils.misc import sequence_mask, block_eye
-from onmt.encoders.encoder import EncoderBase
 import torch
-
-
-class ContainsNaN(Exception):
-    pass
-
-
-def _check_for_nan(tensor, msg=''):
-    if (tensor!=tensor).any():
-        raise ContainsNaN(msg)
 
 
 class FeedForward(torch.nn.Module):
@@ -105,35 +95,9 @@ class TransformerEncoder(torch.nn.Module):
             
     def update_dropout(self, dropout):
         for layer in self.layers: layer.update_dropout(dropout)
-
-
-def build_low_level_mask(source, ent_size, pad_idx):
-    """
-    [seq_len, n_ents, ent_size]
-    To be used in attention mechanism in decoder
-    """
-    mask = (source[:, :, 0].transpose(0, 1)
-                           .squeeze()
-                           .contiguous()
-                           .view(source.size(1), -1, ent_size)
-                           .eq(pad_idx))
-    mask[:, :, 0] = 1  # we also mask the <ent> token
-    return mask
-
-
-def build_high_level_mask(lengths, ent_size):
-    """
-    [bsz, n_ents, n_ents]
-    Filled with -inf where self-attention shouldn't attend, a zeros elsewhere.
-    """
-    ones = lengths // ent_size
-    ones = sequence_mask(ones).unsqueeze(1).repeat(1, ones.max(), 1)
-    mask = torch.full(ones.shape, float('-inf'), device=lengths.device)
-    mask.masked_fill_(ones, 0)
-    return mask
     
 
-class HierarchicalTransformerEncoder(EncoderBase):
+class HierarchicalTransformerEncoder(torch.nn.Module):
     """
     Two encoders, one on the unit level and one on the chunk level
     """
@@ -145,21 +109,38 @@ class HierarchicalTransformerEncoder(EncoderBase):
         super().__init__()
         
         self.embeddings = embeddings
+        self.hidden_size = hidden_size=embeddings.embedding_size
         
         self.ent_size = dataset_config.entity_size
         
-        self.unit_encoder = TransformerEncoder(hidden_size=embeddings.embedding_size,
-                                               heads=low_level_heads,
-                                               num_layers=low_level_layers,
-                                               dim_feedforward=dim_feedforward,
-                                               glu_depth=units_glu_depth,
-                                               dropout=dropout)
-        self.chunk_encoder = TransformerEncoder(hidden_size=embeddings.embedding_size,
-                                                heads=high_level_heads,
-                                                num_layers=high_level_layers,
-                                                dim_feedforward=dim_feedforward,
-                                                glu_depth=chunks_glu_depth,
-                                                dropout=dropout)
+        self.low_level_encoder = TransformerEncoder(hidden_size=self.hidden_size,
+                                                    heads=low_level_heads,
+                                                    num_layers=low_level_layers,
+                                                    dim_feedforward=dim_feedforward,
+                                                    glu_depth=units_glu_depth,
+                                                    dropout=dropout)
+        self.high_level_encoder = TransformerEncoder(hidden_size=self.hidden_size,
+                                                     heads=high_level_heads,
+                                                     num_layers=high_level_layers,
+                                                     dim_feedforward=dim_feedforward,
+                                                     glu_depth=chunks_glu_depth,
+                                                     dropout=dropout)
+
+        game_repr = torch.nn.Parameter(torch.Tensor(1, 1, self.hidden_size))
+        self.register_parameter('game_repr', game_repr)
+
+        self._init_parameters_manually()
+
+        # once the module is initialized, check for NaNs
+        check_object_for_nan(self)
+
+    def _init_parameters_manually(self):
+        torch.nn.init.uniform_(self.game_repr, -1, 1)
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
     @classmethod
     def from_opt(cls, opt, embeddings, dataset_config):
         """Alternate constructor."""
@@ -176,42 +157,83 @@ class HierarchicalTransformerEncoder(EncoderBase):
             chunks_glu_depth=opt.high_level_glu_depth,
             dropout=opt.dropout
         )
+
+    @staticmethod
+    def build_low_level_mask(source, ent_size, pad_idx):
+        """
+        [seq_len, n_ents, ent_size]
+        To be used in attention mechanism in decoder
+        """
+        mask = (source[:, :, 0].transpose(0, 1)
+                .squeeze()
+                .contiguous()
+                .view(source.size(1), -1, ent_size)
+                .eq(pad_idx))
+        mask[:, :, 0] = 1  # we also mask the <ent> token
+        return mask
+
+    def build_high_level_mask(self, lengths, max_size):
+        """
+        [bsz, n_ents, n_ents]
+        Filled with -inf where self-attention shouldn't attend, a zeros elsewhere.
+        """
+        ones = sequence_mask(lengths, max_size).unsqueeze(1).expand(-1, max_size, -1)
+        mask = torch.full(ones.shape, float('-inf'), device=self.device)
+        mask.masked_fill_(ones, 0)
+        return mask
     
-    def forward(self, src, lengths=None):
+    def forward(self, src, lengths, n_primaries):
         """
         See :func:`EncoderBase.forward()`
         
         src (tensor) [seq_len, bs, 2]
         2 <-- (value, type)
         """
-        self._check_args(src, lengths)
         
         seq_len, bsz, _ = src.shape
         n_ents = seq_len // self.ent_size
         
-         # sanity check
+        # sanity check
         assert seq_len % n_ents == 0
         assert seq_len == lengths.max()
         
         # We build the masks for self attention and decoding
-        eye = block_eye(n_ents, self.ent_size)
-        self_attn_mask = torch.full((seq_len, seq_len), float('-inf'))
+        # TODO: fix padding in self_attn_mask!
+        eye = block_eye(n_ents, self.ent_size, device=self.device, dtype=torch.bool)
+        self_attn_mask = torch.full((seq_len, seq_len), float('-inf'), device=self.device)
         self_attn_mask.masked_fill_(eye, 0)
-        low_level_mask = build_low_level_mask(src, self.ent_size,
+        low_level_mask = self.build_low_level_mask(src, self.ent_size,
                                               self.embeddings.word_padding_idx)
-        high_level_mask = build_high_level_mask(lengths, self.ent_size)
+
+        # high_level_mask is based on primaries, because we don't want to
+        # include elaboration at this step of the encoding (during inference,
+        # this will not be available information).
+        # We +1 the number of primaries, because we include a <game> token
+        # (which is simply a learned parameter of the encoder)
+        # that will serve as an aggregated repr for the whole match. This repr
+        # will be used to ground sentences which have no grounded entities,
+        # as well as initialize the decoder's hidden states.
+        high_level_mask = self.build_high_level_mask(n_primaries + 1, n_ents + 1)
         
         # embs [seq_len, bs, hidden_size]
         embs, pos_embs = self.embeddings(src)
-        _check_for_nan(embs, 'after embedding layer')
-        _check_for_nan(pos_embs, 'after embedding layer')
+        check_object_for_nan(embs)
+        check_object_for_nan(pos_embs)
         
         # low_level_repr [seq_len, bs, hidden_size]
-        low_level_repr = self.unit_encoder(embs, mask=self_attn_mask.to(src.device))
+        low_level_repr = self.low_level_encoder(embs, mask=self_attn_mask)
 
+        # Extract the repr at the positions of <ent> tokens.
         # high_level_repr  [n_units, bs, hidden_size]
         high_level_repr = low_level_repr[range(0, seq_len, self.ent_size), :, :]
-        high_level_repr = self.chunk_encoder(high_level_repr, mask=high_level_mask)
+
+        # We also add a <game> repr at the beginning.
+        # self.game_repr is [1, 1, dim] and is expanded to [1, batch_size, dim]
+        game_repr = self.game_repr.expand(-1, high_level_repr.size(1), -1)
+        high_level_repr = torch.cat([game_repr, high_level_repr], dim=0)
+
+        # We high level encode the entities
+        high_level_repr = self.high_level_encoder(high_level_repr, mask=high_level_mask)
         
         # memory bank every thing we want to pass to the decoder
         # all tensors should have dim(1) be the batch size
@@ -223,8 +245,7 @@ class HierarchicalTransformerEncoder(EncoderBase):
             'high_level_mask': high_level_mask[:, 0, :].unsqueeze(0).eq(float('-inf'))
         }
         
-        # We average the low_level_repr representation to give a final encoding
-        # and be inline with the onmt framework
-        encoder_final = high_level_repr.mean(dim=0).unsqueeze(0)
+        # We extract the <game> repr to initialize the decoder's hidden states
+        encoder_final = high_level_repr[:1]
         
         return encoder_final, memory_bank, lengths

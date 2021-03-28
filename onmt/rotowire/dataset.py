@@ -145,6 +145,9 @@ class RotowireParser:
         example['source_vocab'] = Vocab(
             source_vocab, specials=['<unk>', '<pad>', '<ent>'])
 
+        # The encoder final representation is based on primary entities only
+        example['n_primaries'] = len(entity_elaboration_idxs)
+
         # We also build a src_map. This mapping assigns to each source token
         # its position in the source_vocab. This is used by the copy mechanism
         # to gather probas over source_vocab using attention over src.
@@ -327,6 +330,7 @@ class RotoWireDataset(Dataset):
         
         # Adding all stuff that doesn't require processing
         example['src_map'] = raw_example['src_map']
+        example['n_primaries'] = torch.LongTensor([raw_example['n_primaries']])
         example['src_ex_vocab'] = raw_example['source_vocab']
         example['alignments'] = [torch.LongTensor(alignment)
                                  for alignment in raw_example['alignments']]
