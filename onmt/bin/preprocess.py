@@ -1,5 +1,6 @@
 from onmt.rotowire import RotoWireDataset
 from onmt.rotowire import RotowireConfig
+from onmt.utils.logging import logger
 
 
 import configargparse as argparse
@@ -21,6 +22,8 @@ def get_parser():
                        help='Where to save the data, as a prefix. '
                             '(We will save examples and vocabs in separate '
                             'files)')
+    group.add_argument('--log-file', dest='log_file', required=True,
+                       help='Logging preprocessing info')
     group.add_argument('--overwrite', action="store_true",
                        help="Overwrite existing data if any.")
     
@@ -37,11 +40,18 @@ def main(args=None):
     
     parser = get_parser()
     args = parser.parse_args(args) if args else parser.parse_args()
+
+    logger.init_logger(args.log_file)
     
     config = RotowireConfig.from_opts(args)
-    dataset = RotoWireDataset.from_raw_json(args.train_file, config=config)
 
-    dataset.dump(args.save_data, args.overwrite)
+    # The following classmethod builds and save the dataset on its own
+    RotoWireDataset.build_from_raw_json(
+        filename=args.train_file,
+        config=config,
+        dest=args.save_data,
+        overwrite=args.overwrite
+    )
 
 
 if __name__ == '__main__':

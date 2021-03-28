@@ -5,6 +5,7 @@ TODO: multiprocessing + logging
 from onmt.rotowire.config import RotowireConfig
 from onmt.rotowire.utils import FileIterable
 from torch.nn.utils.rnn import pad_sequence
+from onmt.utils.logging import logger
 from torch.utils.data import Dataset
 from torchtext.vocab import Vocab
 from collections import Counter
@@ -13,7 +14,6 @@ import more_itertools
 import functools
 import torch
 import tqdm
-import json
 import os
 
 
@@ -45,8 +45,7 @@ def _(sentence: list, vocab: Vocab, add_special_tokens: bool=False):
 
 class DataAlreadyExistsError(Exception):
     def __init__(self, filename):
-        skip = ' ' * (len(self.__class__.__name__) + 2)
-        msg = f'{filename}\n{skip}Consider using overwrite=True'
+        msg = f'\n\t{filename}\n\tConsider using overwrite=True'
         super(DataAlreadyExistsError, self).__init__(msg)
 
 
@@ -279,9 +278,17 @@ class RotoWireDataset(Dataset):
         if config is not None:
             self.config = config
         else:
+            logger.info('Loading default config.')
             self.config = RotowireConfig.from_defaults()
 
         self.elab_vocab = self.config.elaboration_vocab
+
+        logger.info('Dataset loaded with the following config:')
+        logger.info(self.config)
+        logger.info(f'Number of examples: {len(self)}')
+        logger.info(f'Size of vocabulary: {len(self.main_vocab)}')
+        logger.info(f'Number of known columns: {len(self.cols_vocab)}')
+        logger.info(f'Number of known elaborations: {len(self.elab_vocab)}')
         
     def get_vocabs(self):
         return {
@@ -361,14 +368,19 @@ class RotoWireDataset(Dataset):
         paths = self.check_paths(prefix, overwrite)
         
         # saving examples
+        logger.info(f"Saving examples to {paths['examples']}")
         torch.save(self.examples, paths['examples'])
         
         # saving vocabs (not including elaboration vocab, which is always fixed)
+        logger.info(f"Saving vocabularies to {paths['vocabs']}")
         vocabs = {'main_vocab': self.main_vocab, 'cols_vocab': self.cols_vocab}
         torch.save(vocabs, paths['vocabs'])
 
         # saving config
+        logger.info(f"Saving config to {paths['config']}")
         torch.save(self.config, paths['config'])
+
+        logger.info('All saved.')
         
     @classmethod
     def load(cls, prefix):
@@ -378,12 +390,25 @@ class RotoWireDataset(Dataset):
         return cls(examples, **vocabs, config=config)
     
     @classmethod
-    def from_raw_json(cls, filename, config=None):
+    def build_from_raw_json(cls, filename, config=None,
+                            dest=None, overwrite=False):
         """
+        Build a RotowireDataset from the jsonl <filename>.
+        ARGS:
+            config (RotowireConfig): see onmt.rotowire.config.py for info
+            dest (filename): if provided, will save the dataset to <dest>
+            overwrite (Bool): whether to replace existing data
+
         TODO: Use multiprocessing to improve performances.
         """
         if config is None:
             config = RotowireConfig.from_defaults()
+
+        if dest is not None:
+            cls.check_paths(dest, overwrite=overwrite)
+
+        logger.info(f'Prepocessing Rotowire file, found at {filename}')
+        logger.info(config)
 
         examples = list()
         main_vocab = Counter()
@@ -410,4 +435,9 @@ class RotoWireDataset(Dataset):
         
         cols_vocab = Vocab(cols_vocab, specials=['<unk>', '<pad>', '<ent>'])
             
-        return cls(examples, main_vocab, cols_vocab, config=config)
+        dataset = cls(examples, main_vocab, cols_vocab, config=config)
+
+        if dest is not None:
+            dataset.dump(dest, overwrite=overwrite)
+
+        return dataset

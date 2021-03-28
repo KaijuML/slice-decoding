@@ -1,19 +1,19 @@
 #!/usr/bin/env python
 """I have merge train/train_single for this project."""
-import os
 
-import torch
-
-from onmt.model_builder import build_model
-from onmt.utils.optimizers import Optimizer
-from onmt.utils.misc import set_random_seed
-from onmt.trainer import build_trainer
-from onmt.models import build_model_saver
-from onmt.utils.logging import init_logger, logger
-from onmt.utils.parse import ArgumentParser
 
 from onmt.rotowire import RotoWireDataset, build_dataset_iter
+from onmt.utils.optimizers import Optimizer
+from onmt.utils.misc import set_random_seed
+from onmt.utils.parse import ArgumentParser
+from onmt.model_builder import build_model
+from onmt.models import build_model_saver
+from onmt.trainer import build_trainer
+from onmt.utils.logging import logger
+
 import onmt.opts
+import torch
+import os
 
 
 def configure_process(opt, device_id):
@@ -32,7 +32,7 @@ def train(opt):
     device_id = 0 if opt.use_gpu else -1
     
     configure_process(opt, device_id)
-    init_logger(opt.log_file)
+    logger.init_logger(opt.log_file)
     
     assert len(opt.accum_count) == len(opt.accum_steps), \
         'Number of accum_count values must match number of accum_steps'
