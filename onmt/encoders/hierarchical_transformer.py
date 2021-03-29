@@ -162,7 +162,7 @@ class HierarchicalTransformerEncoder(torch.nn.Module):
     def build_low_level_mask(source, ent_size, pad_idx):
         """
         Builds a mask for the hierarchical attention module (not this one).
-        The mask is [seq_len, n_ents, ent_size], with True everywhere there
+        The mask is [batch_size, n_ents, ent_size], with True everywhere there
         is a padding / ent token.
         """
         mask = (source[:, :, 0].transpose(0, 1)
@@ -187,10 +187,48 @@ class HierarchicalTransformerEncoder(torch.nn.Module):
 
     def forward(self, src, lengths, n_primaries):
         """
-        See :func:`EncoderBase.forward()`
-        
-        src (tensor) [seq_len, bs, 2]
-        2 <-- (value, type)
+        The Hierarchical Encoder first encodes all entities independently
+        and them computes a game representation given all entities repr.
+            1) A low_level_encoder outputs low_level_repr
+            2) A high_level_encoder outputs high_level_repr
+
+        To compute the high_level_repr, we extract the first repr of each entity
+                low_level_repr[range(0, n_ents * ent_size, ent_size)
+        We also add a special game_repr token, to be used at two placed later
+        on: to initialize the encoder hidden state, to be used as context repr
+        for sentences that have no grounded entities.
+
+        :param src: (torch.LongTensor) [seq_len, batch_size, 2]
+                The source tokens that should be encoded. On dim(2), first row
+                are the actual cell values, and second row are column names
+        :param lengths: (torch.LongTensor) [batch_size]
+                Total number of non-null entities for each batch example. It is
+                used nowhere and will be removed in a future commit. Hi to you
+                if you are actually reading all file of all commit!
+        :param n_primaries: (torch.LongTensor) [batch_size]
+                Number of primary entities for each batch example. Used to build
+                the high_level_mask, so that the game_repr does not depend of
+                elaborations that are supposed to be chosen later on in the
+                decoding procedure
+
+        :returns high_level_repr (torch.FloatTensor) [n_ents, batch_size, dim]
+            High level representation of <ent> tokens, as computed by the high
+            level encoder, after extracting the reprs computed by the low level
+            encoder.
+        :returns low_level_repr (torch.FloatTensor) [seq_len, batch_size, dim]
+            Representation of all cell values, as computed by the low_level_encoder
+            (reprs from ont entity are independent of all reprs from other entites.
+        :returns pos_embs (torch.FloatTensor) [seq_len, batch_size, dim]
+            Embeddings of column names. Will be used instead of low_level_repr
+            in the attention module, if --use-pos is given as a training option
+        :returns low_level_mask (torch.FloatTensor) [batch_size, n_ents, ent_size]
+            Mask for the padding / ent tokens inside each entities
+        :returns high_level_mask (torch.FloatTensor) [1 batch_size, n_ents]
+            Dynamic context mask for the hierarchical attention. Constrains the
+            decoder to attend to a select number of entities each step.
+        :returns game_repr (torch.FloatTensor) [1 batch_size, dim]
+            Game representation computed as an aggregation of all primary reprs
+
         """
         
         seq_len, bsz, _ = src.shape
