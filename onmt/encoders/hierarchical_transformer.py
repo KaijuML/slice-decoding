@@ -273,12 +273,9 @@ class HierarchicalTransformerEncoder(torch.nn.Module):
         high_level_repr = torch.cat([game_repr, high_level_repr], dim=0)
 
         # We high level encode the entities
+        # Note that this includes a "fake" game_repr entity at position 0
+        # We will have to remember with this in the attention module
         high_level_repr = self.high_level_encoder(high_level_repr, mask=high_level_mask)
-
-        # We extract the <game> repr to initialize the decoder's hidden states
-        # We also remove useless dim in the high_level_mask
-        game_repr, high_level_repr = high_level_repr.split([1, n_ents], dim=0)
-        high_level_mask = high_level_mask[:, 1, 1:]  # we removed game_repr
 
         # memory bank every thing we want to pass to the decoder
         # all tensors should have dim(1) be the batch size
@@ -287,8 +284,7 @@ class HierarchicalTransformerEncoder(torch.nn.Module):
             'low_level_repr': low_level_repr,
             'pos_embs': pos_embs,
             'low_level_mask': low_level_mask.transpose(0, 1),
-            'high_level_mask': high_level_mask.unsqueeze(0).eq(float('-inf')),
-            'game_repr': game_repr
+            'game_repr': high_level_repr[:1]
         }
 
         return memory_bank

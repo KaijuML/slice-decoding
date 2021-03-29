@@ -2,32 +2,9 @@
 
 from onmt.modules import HierarchicalAttention, Aggregation
 from onmt.models.stacked_rnn import StackedLSTM
-from onmt.utils.misc import aeq
+from onmt.utils.misc import aeq, check_object_for_nan
 
 import torch
-
-
-class ContainsNaN(Exception):
-    pass
-
-
-def check_object_for_nan(obj):
-    if isinstance(obj, torch.nn.Module):
-        for name, tensor in obj.named_parameters():
-            if (tensor != tensor).any():
-                raise ContainsNaN(name)
-    elif isinstance(obj, torch.Tensor):
-        if (obj != obj).any():
-            raise ContainsNaN()
-    elif isinstance(obj, (list, tuple)):
-        for _obj in obj:
-            check_object_for_nan(_obj)
-    elif isinstance(obj, dict):
-        for key, value in obj.items():
-            try:
-                check_object_for_nan(value)
-            except ContainsNaN:
-                raise ContainsNaN(key)
 
 
 class HierarchicalRNNDecoder(torch.nn.Module):
@@ -143,7 +120,8 @@ class HierarchicalRNNDecoder(torch.nn.Module):
     def _init_parameters_manually(self):
         torch.nn.init.uniform_(self._input_feed, -1, 1)
 
-    def _check_arg_types_and_values(self, embeddings=None, dataset_config=None,
+    @staticmethod
+    def _check_arg_types_and_values(embeddings=None, dataset_config=None,
             num_layers=2, dropout=0.0, attn_type="general", attn_func="softmax",
             copy_attn_type="general", use_cols_in_attention=True,
             separate_copy_mechanism=False, entity_aggregation_heads=1,
@@ -189,8 +167,6 @@ class HierarchicalRNNDecoder(torch.nn.Module):
         # Init a useless state, to debug tracking states
         self.state['tracking'] = torch.zeros(1, batch_size, 1, device=self.device)
 
-        # check_object_for_nan(self.state)
-
     def set_state(self, state):
         self.state = state
 
@@ -208,8 +184,6 @@ class HierarchicalRNNDecoder(torch.nn.Module):
         self.state = {
             key: fn(state) for key, state in self.state.items()
         }
-
-        # check_object_for_nan(self.state)
 
     def detach_state(self):
         self.state["hidden"] = tuple(h.detach() for h in self.state["hidden"])
@@ -236,8 +210,8 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             elaboration_dim=opt.elaboration_dim)
 
     def forward(self, sentences=None, memory_bank=None,
-                      contexts=None, elaborations=None,
-                      action=None):
+                context_repr=None, contexts=None, elaborations=None,
+                action=None):
         """
         Action should be from [decode_full, decode_once, predict_context]
         Set to None to force explicit choice.
@@ -248,18 +222,16 @@ class HierarchicalRNNDecoder(torch.nn.Module):
 
         if action in ['decode_full']:
 
-            if sentences is None or memory_bank is None or contexts is None:
-                raise RuntimeError('sentences, contexts and memory bank must be'
-                                   ' given when decoding sentences.')
+            if any(item is None for item in [sentences, context_repr,
+                                             contexts, memory_bank]):
+                raise RuntimeError('sentences, context_repr, contexts and '
+                                   'memory_bank must be given when decoding '
+                                   'sentences.')
 
             dec_state, dec_outs, attns = self._run_forward_pass(sentences,
+                                                                context_repr,
                                                                 contexts,
                                                                 memory_bank)
-
-            # check_object_for_nan(self)
-            # check_object_for_nan(dec_state)
-            # check_object_for_nan(dec_outs)
-            # check_object_for_nan(attns)
 
             # dec_outs is list of [batch_size, hidden_dim]
             # We stack to get [tgt_lengths+1, batch_size, hidden_dim]
@@ -270,8 +242,6 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             self.state["input_feed"] = dec_outs[-1].unsqueeze(0)
             self.state['tracking'] += 1
 
-            # check_object_for_nan(self.state)
-
             return dec_outs, attns
 
         elif action == 'compute_context_representation':
@@ -280,8 +250,6 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             #   1) Aggregating the grounding entities
             #   2) Embedding elaboration in latent space
             # Both the aggregation and emb are cat + mlp to self.hidden_size
-
-            # check_object_for_nan(memory_bank)
 
             if memory_bank is None:  # or elaborations is None:
                 raise RuntimeError('memory bank & elaborations must be given '
@@ -309,15 +277,14 @@ class HierarchicalRNNDecoder(torch.nn.Module):
                                    device=self.device,
                                    dtype=torch.long)
             contexts = torch.cat([game_ctx, contexts + 1], dim=1)
-            contexts = contexts.view(n_sents * (n_ents+1), batch_size)
+            # contexts are now [n_sents, n_ents+1, batch_size]
 
             # Create the index for torch.gather
-            index = contexts.unsqueeze(2).expand(-1, -1, self.aggregation.dim)
+            index = contexts.view(n_sents * (n_ents+1), batch_size, 1)
+            index = index.expand(-1, -1, self.hidden_size)
 
             # 1.2 Gather & Aggregate grounding entities
-            # All entities are also grounded in the game repr
-            entities = memory_bank['game_repr'], memory_bank['high_level_repr']
-            entities = torch.cat(entities, dim=0).gather(dim=0, index=index)
+            entities = memory_bank['high_level_repr'].gather(dim=0, index=index)
             entities = self.aggregation(entities, n_sents)
 
             # 2 Embedding elaborations
@@ -325,17 +292,47 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             elaborations = self.elaboration_embeddings(elaborations[:-1])
 
             # Merging contexts + elaborations using mlp
-            result = torch.cat([entities, elaborations], dim=2)
-            result = self.merge_entity_and_elaborations(result)
+            context_repr = torch.cat([entities, elaborations], dim=2)
+            context_repr = self.merge_entity_and_elaborations(context_repr)
 
-            return result
+            # context_repr are now [n_sents, batch_size, repr_dim]
+
+            return context_repr, contexts
 
         else:
             raise RuntimeError(f'Unknown decoder action: {action}')
 
-    def _run_forward_pass(self, tgt, ctx, memory_bank):
+    def build_dynamic_high_level_mask(self, ctx, max_size):
         """
-        memory_bank is a tuple (chunks, units, pos_embs, unit_mask, chunk_mask)
+        Note that the mask is built on device even if ctx is not.
+
+        :param ctx:
+        :param max_size:
+        :return:
+        """
+
+        if ctx.dim() == 3:
+            assert ctx.size(0) == 1
+            ctx = ctx.squeeze(0)
+
+        # Mask with True everywhere means attending nowhere (True will be filled by -inf)
+        kwargs = {'dtype': torch.bool, 'device': self.device}
+        high_level_mask = torch.ones(ctx.size(1), max_size, **kwargs)
+
+        # Set to False (i.e. won't be filled by -inf) the grounding entities
+        high_level_mask[torch.arange(0, ctx.size(1)).unsqueeze(0), ctx] = False
+
+        # ctx indicates the grounding entities, with always 0 at the start.
+        # We want to keep first index at True, when there are other grounding
+        # entities (and only change this fake first index to True to null entities)
+        keep_true_idx = ctx.sum(dim=0).ne(0)
+        high_level_mask[keep_true_idx, 0] = True
+
+        return high_level_mask.unsqueeze(0)
+
+    def _run_forward_pass(self, tgt, ctx, idx, memory_bank):
+        """
+        TODO: update decumention of this function!
         """
         # Additional args check.
         input_feed_batch = self.state["input_feed"].size(1)
@@ -351,24 +348,32 @@ class HierarchicalRNNDecoder(torch.nn.Module):
 
         attns = dict()
 
-        emb = self.embeddings(tgt)
-        assert emb.dim() == 3  # len x batch x embedding_dim
+        # Embedding all target inputs. (this is part of teacher forcing: we do
+        # do not care for the actual decoder prediction during training, we
+        # always take the next correct token
+        tgt = self.embeddings(tgt)
+        assert tgt.shape == ctx.shape == (tgt_len, tgt_batch, self.hidden_size)
 
-        # Sanity check that we have the same number of embeddings and context
-        # and they have same batch_size and repr_dim
-        assert ctx.shape == emb.shape
+        packed_iterable = [tensor.split(1, dim=0) for tensor in [tgt, ctx, idx]]
+        n_entities = memory_bank['high_level_repr'].size(0)  # Used in forloop
 
         # Input feed concatenates hidden state with input at every time step.
-        for emb_t, ctx_t in zip(emb.split(1, dim=0), ctx.split(1, dim=0)):
+        # We also cat the context representation of current token.
+        for token, context, index in zip(*packed_iterable):
 
-            dec_in = [emb_t.squeeze(0), ctx_t.squeeze(0), decoder_outputs[-1]]
+            dec_in = [token.squeeze(0), context.squeeze(0), decoder_outputs[-1]]
             rnn_output, dec_state = self.rnn(torch.cat(dec_in, 1), decoder_states)
 
             # If the RNN has several layers, we only use the last one to compute
-            # the attention scores. In pytorch, the outs of the rnn are:
+            # the attention scores, available in rnn_output. In pytorch, the
+            # outputs of the rnn are:
             #     - rnn_output [seq_len, bsz, n-directions * hidden_size]
             #     - dec_state [n-layers * n-directions, bsz, hidden_size] * 2
-            # We unpack the rnn_output on dim 2 and keep the last layer
+
+            # High level mask is changing with each token, depending on which
+            # sentence they belong to, and the grounding entities.
+            mask = self.build_dynamic_high_level_mask(index, n_entities)
+            memory_bank['high_level_mask'] = mask
 
             decoder_output, ret = self.attn(rnn_output, memory_bank)
             for postfix, tensor in ret.items():

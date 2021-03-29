@@ -312,21 +312,39 @@ class Trainer(object):
                 # 2.1 Decode sentences
 
                 # 2.1.1 Compute slice representation for each sentence
-                contexts = decoder(action="compute_context_representation",
-                                   memory_bank=memory_bank,
-                                   contexts=batch.contexts,
-                                   elaborations=batch.elaborations)
+                context_repr, contexts = decoder(
+                    action="compute_context_representation",
+                    memory_bank=memory_bank,
+                    contexts=batch.contexts,
+                    elaborations=batch.elaborations
+                )
 
                 # The sentence_indices are padded with zeros and first sent is
                 # denoted by 1. To use torch.gather effectively, we then add
                 # a fake context on contexts[0] which will be gathered on
                 # pad index, and move everything by 1.
-                fake_ctx = torch.zeros(1, contexts.size(1), contexts.size(2),
-                                       device=contexts.device)
-                contexts = torch.cat([fake_ctx, contexts], dim=0)
-                index = sentence_indices.unsqueeze(2).expand(-1, -1,
-                                                             contexts.size(2))
-                contexts = contexts.gather(dim=0, index=index)
+                n_sents, batch_size, repr_dim = context_repr.shape
+                fake_ctx = torch.zeros(1, batch_size, repr_dim, device=self.device)
+                context_repr = torch.cat([fake_ctx, context_repr], dim=0)
+                index = sentence_indices.unsqueeze(2).expand(-1, -1, repr_dim)
+                context_repr = context_repr.gather(dim=0, index=index)
+
+                # We make the same operation on the contexts tensor. Because
+                # the result will be used in indexing/masking operations, we
+                # move everything to cpu, to save some CUDA memory
+                n_sents, n_ents, batch_size = contexts.shape
+                index = sentence_indices.unsqueeze(1).expand(-1, n_ents, -1)
+                contexts = torch.cat([contexts[-1:], contexts], dim=0).to('cpu')
+                contexts = contexts.gather(dim=0, index=index.to("cpu"))
+
+                # 2.1.2 Actually decode sentences
+                outputs, attns = decoder(action='decode_full',
+                                         sentences=sentences,
+                                         context_repr=context_repr,
+                                         contexts=contexts,
+                                         memory_bank=memory_bank,)
+
+                # 3. Compute losses based on decoder's hidden states.
 
                 # This batch object is used to comply with onmt's API
                 _batch = SentenceBatch(
@@ -336,14 +354,6 @@ class Trainer(object):
                     alignment=batch.alignments,
                     indices=batch.indices,
                 )
-
-                # 2.1.2 Actually decode sentences
-                outputs, attns = decoder(action='decode_full',
-                                         sentences=_batch.tgt,
-                                         contexts=contexts,
-                                         memory_bank=memory_bank,)
-
-                # 3. Compute losses based on decoder's hidden states.
 
                 # 3.1 Compute the main loss from sentence generation
                 loss, batch_stats = self.sentence_loss(
@@ -390,8 +400,6 @@ class Trainer(object):
         w = self.context_loss_lambda
 
         final_loss = (1 - w) * main_loss + w * elab_loss
-
-        logger.info(f'{main_loss=} {final_loss=}')
 
         return final_loss
 

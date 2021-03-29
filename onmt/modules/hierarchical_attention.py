@@ -1,4 +1,4 @@
-from ..utils.misc import aeq
+from ..utils.misc import aeq, check_object_for_nan
 
 import torch
 
@@ -124,6 +124,9 @@ class HierarchicalAttention(torch.nn.Module):
         self.linear_out = torch.nn.Linear(self.chunks_dim * 2, 
                                           self.chunks_dim,
                                           bias=(attn_type == "mlp"))
+
+        # Sanity check
+        check_object_for_nan(self)
         
     def forward(self, source, memory_bank):
         """
@@ -183,11 +186,9 @@ class HierarchicalAttention(torch.nn.Module):
         #   - we mask the padding and the <ent> token
         #   - we softmax
         #   - we flatten the scores again
-        _check_for_nan(align_units, 'align units scores')  # sanity check (1)
         align_units = align_units.view(batch_size, -1, self.ent_size)
         align_units = align_units.masked_fill(low_level_mask, float('-inf'))
-        _check_for_nan(align_units, 'align units scores filled with -inf')  # sanity check (2)
-        
+
         # tricky block
         # we softmax on the last dim, ie: separatly on each entity
         # However, some entity might be full <pad>, meaning full -inf
@@ -197,16 +198,24 @@ class HierarchicalAttention(torch.nn.Module):
         nan_mask = (align_units != align_units).sum(dim=2).ne(0)  # nan != nan
         if nan_mask.sum().item():
             align_units = align_units.masked_fill(nan_mask.unsqueeze(-1), 0)
-        _check_for_nan(align_units, 'align units after attn_func')  # sanity check (3)
-        
+
         # we flatten the scores again
         align_units = align_units.view(batch_size, 1, -1)
         
         # Now the second level of attention, on the <ent> tokens
-        align_chunks.masked_fill_(high_level_mask, -1)
+        align_chunks.masked_fill_(high_level_mask, float('-inf'))
         align_chunks = self.attn_func(align_chunks, -1)
 
-        _check_for_nan(align_chunks, 'align_chunks after attn_func')
+        # The high level alignment scores are one entity to large: they also
+        # include the game_repr which is a "fake" entity, with no real attributes
+        # We simply remove, plain and simple, the first value of align_chunks
+        # so that this issue is solved. In most cases, this value was padded by
+        # -inf before the softmax, so it will not change the distribution. In
+        # the other few cases where it was not padded, it was also the only one
+        # meaning its value is 1 and all others are zero. This will lead to a
+        # zero attention which will lead to a zero context. Hopefully, the
+        # decoder will learn to handle zero context, as having a special meaning.
+        align_chunks = align_chunks[:, :, 1:]
 
         # To compute the final scores, we weight the unit scores by the chunk
         # score from the chunk to witch they belong. We inflate the chunk scores
@@ -225,7 +234,6 @@ class HierarchicalAttention(torch.nn.Module):
         if self.attn_type in ["general", "dot"]:
             attn_h = torch.tanh(attn_h)
 
-
         attn_h = attn_h.squeeze(1)
         align_vectors = align_vectors.squeeze(1)
 
@@ -242,6 +250,8 @@ class HierarchicalAttention(torch.nn.Module):
             '_align_chunks': align_chunks.squeeze(1),
             '_align_units':align_units.squeeze(1)
         }
+
+        check_object_for_nan(ret)
 
         return attn_h, ret
 
