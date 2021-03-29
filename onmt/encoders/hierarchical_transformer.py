@@ -161,8 +161,9 @@ class HierarchicalTransformerEncoder(torch.nn.Module):
     @staticmethod
     def build_low_level_mask(source, ent_size, pad_idx):
         """
-        [seq_len, n_ents, ent_size]
-        To be used in attention mechanism in decoder
+        Builds a mask for the hierarchical attention module (not this one).
+        The mask is [seq_len, n_ents, ent_size], with True everywhere there
+        is a padding / ent token.
         """
         mask = (source[:, :, 0].transpose(0, 1)
                 .squeeze()
@@ -174,14 +175,16 @@ class HierarchicalTransformerEncoder(torch.nn.Module):
 
     def build_high_level_mask(self, lengths, max_size):
         """
-        [bsz, n_ents, n_ents]
-        Filled with -inf where self-attention shouldn't attend, a zeros elsewhere.
+        Builds a mask for the hierarchical encoder module (this one!).
+        The mask is [bsz, n_ents, n_ents], with 0 everywhere an entity can
+        attend to another entity, and filled with -inf where self-attention
+        shouldn't attend.
         """
         ones = sequence_mask(lengths, max_size).unsqueeze(1).expand(-1, max_size, -1)
         mask = torch.full(ones.shape, float('-inf'), device=self.device)
         mask.masked_fill_(ones, 0)
         return mask
-    
+
     def forward(self, src, lengths, n_primaries):
         """
         See :func:`EncoderBase.forward()`
@@ -198,7 +201,6 @@ class HierarchicalTransformerEncoder(torch.nn.Module):
         assert seq_len == lengths.max()
         
         # We build the masks for self attention and decoding
-        # TODO: fix padding in self_attn_mask!
         eye = block_eye(n_ents, self.ent_size, device=self.device, dtype=torch.bool)
         self_attn_mask = torch.full((seq_len, seq_len), float('-inf'), device=self.device)
         self_attn_mask.masked_fill_(eye, 0)
