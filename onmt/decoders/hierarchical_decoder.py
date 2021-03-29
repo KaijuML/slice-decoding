@@ -34,7 +34,8 @@ class HierarchicalRNNDecoder(torch.nn.Module):
 
                  entity_aggregation_heads=1,
                  entity_aggregation_do_proj=True,
-                 elaboration_dim=5):
+                 elaboration_dim=5,
+                 use_dynamic_masking=True):
 
         self._check_arg_types_and_values(
             embeddings=embeddings,
@@ -57,6 +58,8 @@ class HierarchicalRNNDecoder(torch.nn.Module):
         self.hidden_size = embeddings.embedding_size
         self._separate_copy_mechanism = separate_copy_mechanism
         self.num_layers = num_layers
+
+        self.use_dynamic_masking = use_dynamic_masking
 
         # Make sure that self.init_state is called before running
         self._state_is_init = False
@@ -144,7 +147,7 @@ class HierarchicalRNNDecoder(torch.nn.Module):
     def device(self):
         return next(self.parameters()).device
 
-    def init_state(self, encoder_final):
+    def init_state(self, encoder_final, high_level_mask=None):
         """
         Here we initialize the hidden state of the hierarchical_decoder
         This function only works with the hierarchical_transformer.
@@ -166,6 +169,10 @@ class HierarchicalRNNDecoder(torch.nn.Module):
 
         # Init a useless state, to debug tracking states
         self.state['tracking'] = torch.zeros(1, batch_size, 1, device=self.device)
+
+        if not self.use_dynamic_masking:
+            assert high_level_mask is not None
+            self.state['high_level_mask'] = high_level_mask
 
     def set_state(self, state):
         self.state = state
@@ -207,7 +214,8 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             use_cols_in_attention=opt.use_cols_in_attention,
             entity_aggregation_heads=opt.entity_aggregation_heads,
             entity_aggregation_do_proj=opt.entity_aggregation_do_proj,
-            elaboration_dim=opt.elaboration_dim)
+            elaboration_dim=opt.elaboration_dim,
+            use_dynamic_masking=not opt.static_masking)
 
     def forward(self, sentences=None, memory_bank=None,
                 context_repr=None, contexts=None, elaborations=None,
@@ -372,8 +380,11 @@ class HierarchicalRNNDecoder(torch.nn.Module):
 
             # High level mask is changing with each token, depending on which
             # sentence they belong to, and the grounding entities.
-            mask = self.build_dynamic_high_level_mask(index, n_entities)
-            memory_bank['high_level_mask'] = mask
+            if self.use_dynamic_masking:
+                mask = self.build_dynamic_high_level_mask(index, n_entities)
+                memory_bank['high_level_mask'] = mask
+            else:
+                memory_bank['high_level_mask'] = self.state['high_level_mask']
 
             decoder_output, ret = self.attn(rnn_output, memory_bank)
             for postfix, tensor in ret.items():

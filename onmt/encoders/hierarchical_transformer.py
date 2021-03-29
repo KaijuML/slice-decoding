@@ -284,6 +284,7 @@ class HierarchicalTransformerEncoder(torch.nn.Module):
             'low_level_repr': low_level_repr,
             'pos_embs': pos_embs,
             'low_level_mask': low_level_mask.transpose(0, 1),
+            'high_level_mask': high_level_mask[:, 0, :].unsqueeze(0).eq(float('-inf')),
             'game_repr': high_level_repr[:1]
         }
 

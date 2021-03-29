@@ -304,7 +304,8 @@ class Trainer(object):
 
                 # 2.0 Initialize decoder's hidden state with the encoder out.
                 decoder = self.model.decoder
-                decoder.init_state(memory_bank['game_repr'])
+                decoder.init_state(memory_bank['game_repr'],
+                                   memory_bank['high_level_mask'])
 
                 # Extract sentences and token to sentence index mapping
                 sentences, sentence_starts, sentence_indices = batch.sentences

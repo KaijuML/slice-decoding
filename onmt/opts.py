@@ -96,6 +96,8 @@ def model_opts(parser):
               type=str, default="softmax", choices=["softmax", "sparsemax"])
     group.add('--use_cols_in_attention', action='store_true', 
               help="Compute attention scores on col embeddings.")
+    group.add('--static-masking', dest='static_masking', action="store_true",
+              help="Compute attention using all primary entities")
 
     # Generator and loss options.
     group = parser.add_argument_group('Generator')

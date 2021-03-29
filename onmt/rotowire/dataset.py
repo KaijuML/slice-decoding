@@ -238,7 +238,7 @@ class RotowireParser:
         """
         # noinspection PyUnresolvedReferences
         if self.config.lowercase:
-            sentence = sentence.lowercase()
+            sentence = sentence.lower()
 
         for token in vocab:
             if '_' in token:
@@ -345,7 +345,7 @@ class RotoWireDataset(Dataset):
         yield from self.examples
         
     @staticmethod
-    def check_paths(relative_prefix, overwrite=False):
+    def check_paths(relative_prefix, overwrite=False, mkdirs=False):
         save_path = os.path.abspath(relative_prefix)
         dirs = os.path.dirname(save_path)
         prefix = os.path.basename(save_path)
@@ -360,6 +360,9 @@ class RotoWireDataset(Dataset):
             raise DataAlreadyExistsError(path_to_vocabs)
         if os.path.exists(path_to_config) and not overwrite:
             raise DataAlreadyExistsError(path_to_config)
+
+        if not os.path.exists(dirs) and mkdirs:
+            os.makedirs(dirs)
                 
         return {
             'examples': path_to_data,
@@ -369,7 +372,7 @@ class RotoWireDataset(Dataset):
         
     def dump(self, prefix, overwrite=False):
     
-        paths = self.check_paths(prefix, overwrite)
+        paths = self.check_paths(prefix, overwrite, mkdirs=True)
         
         # saving examples
         logger.info(f"Saving examples to {paths['examples']}")
