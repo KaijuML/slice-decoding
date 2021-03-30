@@ -35,7 +35,8 @@ class HierarchicalRNNDecoder(torch.nn.Module):
                  entity_aggregation_heads=1,
                  entity_aggregation_do_proj=True,
                  elaboration_dim=5,
-                 use_dynamic_masking=True):
+                 use_primary_mask_only=False,
+                 never_mask_primaries=False):
 
         self._check_arg_types_and_values(
             embeddings=embeddings,
@@ -59,7 +60,8 @@ class HierarchicalRNNDecoder(torch.nn.Module):
         self._separate_copy_mechanism = separate_copy_mechanism
         self.num_layers = num_layers
 
-        self.use_dynamic_masking = use_dynamic_masking
+        self.use_primary_mask_only = use_primary_mask_only
+        self.never_mask_primaries = never_mask_primaries
 
         # Make sure that self.init_state is called before running
         self._state_is_init = False
@@ -170,9 +172,7 @@ class HierarchicalRNNDecoder(torch.nn.Module):
         # Init a useless state, to debug tracking states
         self.state['tracking'] = torch.zeros(1, batch_size, 1, device=self.device)
 
-        if not self.use_dynamic_masking:
-            assert high_level_mask is not None
-            self.state['high_level_mask'] = high_level_mask
+        self.state['primary_mask'] = high_level_mask
 
     def set_state(self, state):
         self.state = state
@@ -215,7 +215,8 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             entity_aggregation_heads=opt.entity_aggregation_heads,
             entity_aggregation_do_proj=opt.entity_aggregation_do_proj,
             elaboration_dim=opt.elaboration_dim,
-            use_dynamic_masking=not opt.static_masking)
+            use_primary_mask_only=opt.use_primary_mask_only,
+            never_mask_primaries=opt.never_mask_primaries)
 
     def forward(self, sentences=None, memory_bank=None,
                 context_repr=None, contexts=None, elaborations=None,
@@ -369,7 +370,7 @@ class HierarchicalRNNDecoder(torch.nn.Module):
         # We also cat the context representation of current token.
         for token, context, index in zip(*packed_iterable):
 
-            dec_in = [token.squeeze(0), context.squeeze(0), decoder_outputs[-1]]
+            dec_in = [token.squeeze(0), decoder_outputs[-1], context.squeeze(0)]
             rnn_output, dec_state = self.rnn(torch.cat(dec_in, 1), decoder_states)
 
             # If the RNN has several layers, we only use the last one to compute
@@ -380,11 +381,13 @@ class HierarchicalRNNDecoder(torch.nn.Module):
 
             # High level mask is changing with each token, depending on which
             # sentence they belong to, and the grounding entities.
-            if self.use_dynamic_masking:
-                mask = self.build_dynamic_high_level_mask(index, n_entities)
-                memory_bank['high_level_mask'] = mask
+            if self.use_primary_mask_only:
+                memory_bank['high_level_mask'] = self.state['primary_mask']
             else:
-                memory_bank['high_level_mask'] = self.state['high_level_mask']
+                dmask = self.build_dynamic_high_level_mask(index, n_entities)
+                if self.never_mask_primaries:
+                    dmask = dmask and self.state['primary_mask']
+                memory_bank['high_level_mask'] = dmask
 
             decoder_output, ret = self.attn(rnn_output, memory_bank)
             for postfix, tensor in ret.items():
@@ -418,4 +421,5 @@ class HierarchicalRNNDecoder(torch.nn.Module):
     @property
     def _input_size(self):
         """Using input feed by concatenating input with attention vectors."""
-        return 3 * self.hidden_size
+        concatenated_tensors = 2 + self.use_dynamic_masking
+        return concatenated_tensors * self.hidden_size
