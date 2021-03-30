@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
-
-import logging
 from logging.handlers import RotatingFileHandler
+import logging
+import os
 
 
 class Logger:
@@ -23,8 +22,8 @@ class Logger:
             self.init_logger()
         self._logger.warn(*args, **kwargs)
 
-
-    def init_logger(self, log_file=None, log_file_level=logging.NOTSET, rotate=False):
+    def init_logger(self, log_file=None, log_file_level=logging.NOTSET,
+                    rotate=False, overwrite_log_file=False):
         log_format = logging.Formatter("[%(asctime)s %(levelname)s] %(message)s")
         logger = logging.getLogger()
         logger.setLevel(logging.INFO)
@@ -34,6 +33,9 @@ class Logger:
         logger.handlers = [console_handler]
 
         if log_file and log_file != '':
+            if os.path.exists(log_file) and overwrite_log_file:
+                os.remove(log_file)
+
             if rotate:
                 file_handler = RotatingFileHandler(
                     log_file, maxBytes=1000000, backupCount=10)

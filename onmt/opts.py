@@ -4,7 +4,6 @@ In particular I removed as much as possible of stuff not related to RotoWire.
 """
 
 import configargparse
-import onmt
 
 
 def config_opts(parser):
@@ -165,6 +164,23 @@ def train_opts(parser):
               help="Random seed used for the experiments "
                    "reproducibility.")
 
+    # Logging
+    group = parser.add_argument_group('Logging')
+    group.add('--report_every', '-report_every', type=int, default=50,
+              help="Print stats at this interval.")
+    group.add('--log_file', '-log_file', type=str, default="",
+              help="Output logs to a file under this path.")
+    group.add('--overwrite_log_file', action='store_true',
+              help="Restart logging from zero")
+    group.add('--log_file_level', '-log_file_level', type=str,
+              action=StoreLoggingLevelAction,
+              choices=StoreLoggingLevelAction.CHOICES,
+              default="0")
+    group.add('--exp_host', '-exp_host', type=str, default="",
+              help="Send logs to this crayon server.")
+    group.add('--exp', '-exp', type=str, default="",
+              help="Name of the experiment for logging.")
+
     # Init options
     group = parser.add_argument_group('Initialization')
     group.add('--param_init', '-param_init', type=float, default=0.1,
@@ -310,19 +326,6 @@ def train_opts(parser):
     group.add('--warmup_steps', '-warmup_steps', type=int, default=4000,
               help="Number of warmup steps for custom decay.")
 
-    group = parser.add_argument_group('Logging')
-    group.add('--report_every', '-report_every', type=int, default=50,
-              help="Print stats at this interval.")
-    group.add('--log_file', '-log_file', type=str, default="",
-              help="Output logs to a file under this path.")
-    group.add('--log_file_level', '-log_file_level', type=str,
-              action=StoreLoggingLevelAction,
-              choices=StoreLoggingLevelAction.CHOICES,
-              default="0")
-    group.add('--exp_host', '-exp_host', type=str, default="",
-              help="Send logs to this crayon server.")
-    group.add('--exp', '-exp', type=str, default="",
-              help="Name of the experiment for logging.")
     # Use Tensorboard for visualization during training
     group.add('--tensorboard', '-tensorboard', action="store_true",
               help="Use tensorboard for visualization during training. "

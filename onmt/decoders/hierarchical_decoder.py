@@ -149,7 +149,7 @@ class HierarchicalRNNDecoder(torch.nn.Module):
     def device(self):
         return next(self.parameters()).device
 
-    def init_state(self, encoder_final, high_level_mask=None):
+    def init_state(self, encoder_final, primary_mask):
         """
         Here we initialize the hidden state of the hierarchical_decoder
         This function only works with the hierarchical_transformer.
@@ -172,7 +172,7 @@ class HierarchicalRNNDecoder(torch.nn.Module):
         # Init a useless state, to debug tracking states
         self.state['tracking'] = torch.zeros(1, batch_size, 1, device=self.device)
 
-        self.state['primary_mask'] = high_level_mask
+        self.state['primary_mask'] = primary_mask
 
     def set_state(self, state):
         self.state = state
@@ -421,5 +421,4 @@ class HierarchicalRNNDecoder(torch.nn.Module):
     @property
     def _input_size(self):
         """Using input feed by concatenating input with attention vectors."""
-        concatenated_tensors = 2 + self.use_dynamic_masking
-        return concatenated_tensors * self.hidden_size
+        return 3 * self.hidden_size
