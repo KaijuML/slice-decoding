@@ -292,8 +292,9 @@ class RotoWireDataset(Dataset):
         logger.info(f'Size of vocabulary: {len(self.main_vocab)}')
         logger.info(f'Number of known columns: {len(self.cols_vocab)}')
         logger.info(f'Number of known elaborations: {len(self.elab_vocab)}')
-        
-    def get_vocabs(self):
+
+    @property
+    def vocabs(self):
         return {
             'main_vocab': self.main_vocab,
             'cols_vocab': self.cols_vocab,
@@ -343,6 +344,30 @@ class RotoWireDataset(Dataset):
     
     def __iter__(self):
         yield from self.examples
+
+    @staticmethod
+    def check_vocabs(vocabs):
+        if isinstance(vocabs, (tuple, list)):
+            vocabs = {'main_vocab': vocabs[0], 'cols_vocab': vocabs[1]}
+        if not isinstance(vocabs, dict):
+            raise TypeError('vocabs should be Dict[Vocab]. '
+                            f'Instead, vocabs are {type(vocabs).__name__}')
+
+        main_vocab = vocabs.get('main_vocab', None)
+        if main_vocab is None:
+            raise ValueError('vocabs are missing main_vocab')
+        elif not isinstance(main_vocab, Vocab):
+            raise ValueError('main_vocab should be Vocab. '
+                             f'Instead, main_vocab is {type(main_vocab.__name__)}')
+
+        cols_vocab = vocabs.get('cols_vocab', None)
+        if cols_vocab is None:
+            raise ValueError('vocabs are missing main_vocab')
+        elif not isinstance(cols_vocab, Vocab):
+            raise ValueError('main_vocab should be Vocab. '
+                             f'Instead, main_vocab is {type(cols_vocab.__name__)}')
+
+        return {'main_vocab': main_vocab, 'cols_vocab': cols_vocab}
         
     @staticmethod
     def check_paths(relative_prefix, overwrite=False, mkdirs=False):
@@ -398,18 +423,28 @@ class RotoWireDataset(Dataset):
     
     @classmethod
     def build_from_raw_json(cls, filename, config=None,
-                            dest=None, overwrite=False):
+                            dest=None, overwrite=False,
+                            vocabs=None):
         """
         Build a RotowireDataset from the jsonl <filename>.
         ARGS:
+            filename (str): Where to find raw jsonl
             config (RotowireConfig): see onmt.rotowire.config.py for info
             dest (filename): if provided, will save the dataset to <dest>
             overwrite (Bool): whether to replace existing data
+            vocabs (Dict[Vocab]): if not None, not build vocabs.
+
+        Note that some checks/warnings are performed early to save time
+        when something goes wrong.
 
         TODO: Use multiprocessing to improve performances.
         """
         if config is None:
+            logger.info('No config file was given, using defaults.')
             config = RotowireConfig.from_defaults()
+
+        if vocabs is not None:
+            vocabs = cls.check_vocabs(vocabs)
 
         if dest is not None:
             cls.check_paths(dest, overwrite=overwrite)
@@ -426,7 +461,8 @@ class RotoWireDataset(Dataset):
         iterable = FileIterable.from_filename(filename, fmt='jsonl')
         desc = "Reading and formatting raw data"
 
-        for idx, jsonline in tqdm.tqdm(enumerate(iterable), desc=desc, total=len(iterable)):
+        for idx, jsonline in tqdm.tqdm(enumerate(iterable),
+                                       desc=desc, total=len(iterable)):
             try:
                 ex, sub_main_vocab, sub_cols_vocab = parser.parse_example(jsonline)
             except Exception as err:
@@ -436,13 +472,17 @@ class RotoWireDataset(Dataset):
             examples.append(ex)
             main_vocab += sub_main_vocab
             cols_vocab += sub_cols_vocab
-            
-        main_vocab = Vocab(main_vocab, max_size=config.vocab_size,
-                           specials=['<unk>', '<pad>', '<s>', '</s>', '<ent>'])
+
+        if vocabs is None:
+            main_specials = ['<unk>', '<pad>', '<s>', '</s>', '<ent>']
+            cols_specials = ['<unk>', '<pad>', '<ent>']
+            vocabs = {
+                'main_vocab': Vocab(main_vocab, max_size=config.vocab_size,
+                                    specials=main_specials),
+                'cols_vocab': Vocab(cols_vocab, specials=cols_specials)
+            }
         
-        cols_vocab = Vocab(cols_vocab, specials=['<unk>', '<pad>', '<ent>'])
-            
-        dataset = cls(examples, main_vocab, cols_vocab, config=config)
+        dataset = cls(examples, **vocabs, config=config)
 
         if dest is not None:
             dataset.dump(dest, overwrite=overwrite)

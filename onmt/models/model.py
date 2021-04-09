@@ -12,10 +12,11 @@ class NMTModel(nn.Module):
       decoder (onmt.decoders.DecoderBase): a decoder object
     """
 
-    def __init__(self, encoder, decoder):
+    def __init__(self, encoder, decoder, config):
         super(NMTModel, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
+        self.config = config
 
     def forward(self, src, tgt, lengths, bptt=False, with_align=False):
         """Forward propagate a `src` and `tgt` pair for training.

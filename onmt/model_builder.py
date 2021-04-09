@@ -111,7 +111,7 @@ def build_base_model(model_opt, vocabs, config, checkpoint=None, device_id=None)
                                               config)
     
     # Build NMTModel(= encoder + decoder).
-    model = onmt.models.NMTModel(encoder, decoder)
+    model = onmt.models.NMTModel(encoder, decoder, config)
 
     # Build Generator (it's always a CopyGenerator)
     vocab_size = len(vocabs['main_vocab'])
