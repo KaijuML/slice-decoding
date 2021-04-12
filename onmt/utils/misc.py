@@ -8,6 +8,15 @@ import torch
 import os
 
 
+class Container:
+    """
+    Dummy class that can be instantiated with arbitrary key-word arguments
+    """
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
 class ContainsNaN(Exception):
     pass
 
@@ -29,6 +38,7 @@ def check_object_for_nan(obj):
                 check_object_for_nan(value)
             except ContainsNaN:
                 raise ContainsNaN(key)
+
 
 def nwise(iterable, n=2):
     iterables = tee(iterable, n)
