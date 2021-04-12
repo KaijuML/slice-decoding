@@ -88,6 +88,18 @@ class Batch:
     Batch object, to comply wiht onmt's API as much as possible.
     """
 
+    _batch_dim_per_item = {
+        'src': [1, 0],
+        'sentences': [1, 1, 1],
+        'n_primaries': 0,
+        'elaborations': 1,
+        'contexts': 2,
+        'alignments': 1,
+        'src_map': 1,
+        'indices': 0,
+        'src_ex_vocab': None
+    }
+
     def __init__(self, fields):
         self.src = fields.pop('src')
         self.sentences = fields.pop('sentences')
@@ -107,7 +119,55 @@ class Batch:
 
     @property
     def batch_size(self):
-        return self.src[0].size(1)
+        return self.indices.size(0)
+
+    @property
+    def device(self):
+        return self.indices.device
+
+    def index_select(self, indices):
+        """
+        Only keep indices of interest in the batch. Used during inference, when
+        an example is done, and we want to remove its element from the batch,
+        to continue generation for other examples of the batch.
+
+        WARNING: if indices are not sorted, this will reorder the batch.
+
+        :param indices: indices to keep
+        :return:
+        """
+        for name, dim in self._batch_dim_per_item.items():
+            item = getattr(self, name)
+            if isinstance(item, tuple):
+                setattr(self, name, tuple([
+                    _item.index_select(_dim, indices)
+                    for _item, _dim in zip(item, dim)
+                ]))
+            elif isinstance(item, list):
+                setattr(self, name, [
+                    _item for idx, _item in enumerate(item)
+                    if idx in indices
+                ])
+            else:
+                setattr(self, name, item.index_select(dim, indices))
+
+    def __repr__(self):
+        s = f'Batch[{self.batch_size}]\n'
+        for name in self._batch_dim_per_item:
+            item = getattr(self, name)
+            if isinstance(item, (tuple, list)):
+                if isinstance(item[0], torch.Tensor):
+                    for i, obj in enumerate(item):
+                        _cls = obj.dtype
+                        s += f'  [{name} {i}] ({_cls}): {list(obj.shape)}\n'
+                else:
+                    _cls = type(item).__name__
+                    s += f'  {name} ({_cls}): [{len(item)}]'
+            elif isinstance(item, torch.Tensor):
+                _cls = item.dtype
+                s += f'  [{name}] ({_cls}): {list(item.shape)}\n'
+            s += '\n'
+        return s.strip()
 
 
 def classic_pad(minibatch, return_lengths=True):
