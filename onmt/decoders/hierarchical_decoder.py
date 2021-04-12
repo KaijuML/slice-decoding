@@ -260,12 +260,20 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             #   2) Embedding elaboration in latent space
             # Both the aggregation and emb are cat + mlp to self.hidden_size
 
-            if memory_bank is None:  # or elaborations is None:
+            if memory_bank is None or elaborations is None:
                 raise RuntimeError('memory bank & elaborations must be given '
                                    'to compute context representations!')
             if contexts is None:
                 err = 'contexts must be given to compute context repr...'
                 raise RuntimeError(err)
+
+            # 0. Trimming elaborations, because during training, we also have
+            # the last elaboration which is full of <eod> (end of document)
+            if (e_len := elaborations.size(0)) != (c_len := contexts.size(0)):
+                assert e_len == c_len + 1
+                elaborations = elaborations[:-1]
+            else:
+                assert e_len == c_len == 1
 
             # 1.1 Shaping the mask for attention in the aggregation step
             # batch.contexts maps every sentence to its grounding entities.
@@ -297,8 +305,7 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             entities = self.aggregation(entities, n_sents)
 
             # 2 Embedding elaborations
-            # We skip the last one, because it is <eod>
-            elaborations = self.elaboration_embeddings(elaborations[:-1])
+            elaborations = self.elaboration_embeddings(elaborations)
 
             # Merging contexts + elaborations using mlp
             context_repr = torch.cat([entities, elaborations], dim=2)
