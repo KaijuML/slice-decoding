@@ -52,26 +52,23 @@ def build_embeddings(opt, main_vocab, cols_vocab):
     )
 
 
-def load_test_model(opt, model_path=None):
-    if model_path is None:
-        model_path = opt.models[0]
+def load_test_model(model_path, device=None):
+    device = device if device is not None else torch.device('cpu')
+
     checkpoint = torch.load(model_path,
                             map_location=lambda storage, loc: storage)
 
     model_opt = ArgumentParser.ckpt_model_opts(checkpoint['opt'])
     ArgumentParser.update_model_opts(model_opt)
     ArgumentParser.validate_model_opts(model_opt)
-    
-    vocabs = checkpoint['vocabs']
-    config = checkpoint['config']
 
-    model = build_base_model(model_opt, 
-                             vocabs, 
-                             config, 
-                             checkpoint, 
-                             opt.gpu)
-    if opt.fp32:
-        model.float()
+    vocabs = checkpoint['vocabs']
+
+    model = build_base_model(model_opt,
+                             vocabs,
+                             checkpoint['config'],
+                             checkpoint,
+                             -1).to(device)
     model.eval()
     model.generator.eval()
     return vocabs, model, model_opt
