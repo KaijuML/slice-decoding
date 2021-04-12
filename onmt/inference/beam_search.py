@@ -1,5 +1,5 @@
-from onmt.translate.decode_strategy import DecodeStrategy
-from onmt.translate import penalties
+from onmt.inference.decode_strategy import DecodeStrategy
+from onmt.inference import penalties
 from onmt.utils.misc import tile
 
 import warnings
