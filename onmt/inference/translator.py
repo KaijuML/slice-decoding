@@ -3,7 +3,10 @@ from onmt.modules.copy_generator import collapse_copy_scores
 from onmt.inference import BeamSearch, GNMTGlobalScorer
 from onmt.model_builder import load_test_model
 from onmt.utils.misc import Container
+
 import torch
+import tqdm
+import os
 
 
 def build_translator(opts, logger=None):
@@ -55,6 +58,10 @@ class Translator:
         self.dest = dest
         self.logger = logger
 
+    @property
+    def device(self):
+        return self.model.device
+
     @classmethod
     def from_opts(cls, model, vocabs, opts, logger):
         return cls(
@@ -75,16 +82,29 @@ class Translator:
             logger=logger,
         )
 
-    def run(self, filename, batch_size):
+    def run(self, filename, batch_size, if_file_exists='raise'):
+
+        if if_file_exists not in {'raise', 'overwrite', 'append'}:
+            raise ValueError(f'Unknown instruction {if_file_exists=}')
+
+        if os.path.exists(self.dest):
+            if if_file_exists == 'raise':
+                raise RuntimeError(f'{self.dest} already exists!')
+            elif if_file_exists == 'overwrite':
+                self.logger.info(f'Overwrite destination file: {self.dest}')
+                with open(self.dest, mode="w", encoding='utf8') as f:
+                    pass  # overwrites
+            else:
+                self.logger.info(f'Appending new generations to existing file: {self.dest}')
 
         dataset = RotoWireDataset.build_from_raw_json(filename,
                                                       config=self.model.config,
                                                       vocabs=self.vocabs)
 
         opt = Container(batch_size=batch_size, num_threads=1)
-        inference_iter = build_dataset_iter(dataset, opt, 0, train=False)
+        inference_iter = build_dataset_iter(dataset, opt, self.device, train=False)
 
-        for batch in inference_iter:
+        for batch in tqdm.tqdm(inference_iter, desc="Running inference"):
             batch_predicted_sentences = self.run_on_batch(batch)
 
             with open(self.dest, mode="a", encoding="utf8") as f:

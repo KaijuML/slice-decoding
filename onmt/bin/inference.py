@@ -57,7 +57,7 @@ def main(args=None):
 
     translator = build_translator(args, logger)
 
-    translator.run(args.source_file, args.batch_size)
+    translator.run(args.source_file, args.batch_size, if_file_exists='overwrite')
 
 
 if __name__ == '__main__':
