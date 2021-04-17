@@ -1,5 +1,6 @@
 from torch.utils.data import DataLoader, Sampler
 from torch.nn.utils.rnn import pad_sequence
+from onmt.utils.misc import format_device
 from typing import Union
 
 import torch
@@ -31,7 +32,10 @@ class IterOnDevice:
 
     def __init__(self, iterable, device_id):
         self.iterable = iterable
-        self.device = torch.device(device_id if device_id >= 0 else 'cpu')
+        self.device = format_device(device_id)
+
+    def __len__(self):
+        return len(self.iterable)
 
     @classmethod
     def obj_to_device(cls, obj, device):

@@ -17,6 +17,17 @@ class Container:
             setattr(self, key, value)
 
 
+def format_device(device_or_device_id):
+    if isinstance(device_or_device_id, torch.device):
+        return device_or_device_id
+    if isinstance(device_or_device_id, str):
+        return torch.device(device_or_device_id)
+    if isinstance(device_or_device_id, int):
+        device_id = device_or_device_id
+        return torch.device(device_id if device_id >= 0 else 'cpu')
+    raise RuntimeError(f'Unknown device: {device_or_device_id}')
+
+
 class ContainsNaN(Exception):
     pass
 
