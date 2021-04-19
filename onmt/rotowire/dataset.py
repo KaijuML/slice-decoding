@@ -10,6 +10,12 @@ from torch.utils.data import Dataset
 from torchtext.vocab import Vocab
 from collections import Counter
 
+from onmt.rotowire.exceptions import (
+    RotowireParsingError,
+    DataAlreadyExistsError,
+    SliceMismatchError
+)
+
 import more_itertools
 import functools
 import torch
@@ -41,12 +47,6 @@ def _(sentence: list, vocab: Vocab, add_special_tokens: bool=False):
     if add_special_tokens:
         sentence = [vocab['<s>']] + sentence + [vocab['</s>']]
     return sentence
-
-
-class DataAlreadyExistsError(Exception):
-    def __init__(self, filename):
-        msg = f'\n\t{filename}\n\tConsider using overwrite=True'
-        super(DataAlreadyExistsError, self).__init__(msg)
 
 
 class RotowireParser:
@@ -81,7 +81,47 @@ class RotowireParser:
 
         self.config = config
 
-    def parse_example(self, jsonline):
+        self.error_logs = dict()
+
+    def parse_example(self, idx, jsonline):
+        """
+        Parse an example of raw Rotowire data. Log any error found
+        :param idx: index of jsonline (used for logging errors)
+        :param jsonline: actual data
+        :return: (parsed_example, example_main_vocab, example_cols_vocab)
+                 OR
+                 (None, None, None) when there was an error
+        """
+        try:
+            return self._parse_example(jsonline)
+        except Exception as err:
+            err_name = err.__class__.__name__
+            if err_name not in self.error_logs:
+                self.error_logs[err_name] = list()
+            self.error_logs[err_name].append(idx)
+            return [None] * 3
+
+    def log_error_and_maybe_raise(self, do_raise=True):
+
+        # empty line to emphasize warnings
+        if len(self.error_logs):
+            logger.warn('')
+
+        for err_name, problematic_idxs in self.error_logs.items():
+            logger.warn(f'{err_name} was encountered at line'
+                        f'{"s" if len(problematic_idxs)>1 else ""} '
+                        f'{problematic_idxs if len(problematic_idxs)>1 else problematic_idxs[0]}')
+        if len(self.error_logs):
+            if do_raise:
+                raise RotowireParsingError(self.error_logs)
+            error_counts = [len(idxs) for _, idxs in self.error_logs.items()]
+            logger.warn(f'{sum(error_counts)} lines were ignored.')
+
+        # empty line to emphasize warnings
+        if len(self.error_logs):
+            logger.warn('')
+
+    def _parse_example(self, jsonline):
 
         inputs, outputs = jsonline['inputs'], jsonline['outputs']
 
@@ -110,7 +150,7 @@ class RotowireParser:
         for sidx, slice_dict in enumerate(inputs):
 
             # Building the mapping from entity+elaboration --> slice index
-            entity = slice_dict['entity']
+            entity = slice_dict['primary_slice_id']
             elaboration = self.elaboration_mapping[slice_dict['type']]
             if entity not in entity_elaboration_idxs:
                 entity_elaboration_idxs[entity] = dict()
@@ -188,15 +228,36 @@ class RotowireParser:
             if elaboration == '<none>':
                 contexts.append([])
             else:
-                contexts.append(sentence['slices'])
+                assert len(sentence['primary_slice_ids']) <= 2
+                contexts.append(sentence['primary_slice_ids'])
 
             # We also add the slice used for elaborations <time> & <event>
             if elaboration in {'<time>', '<event>'}:
-                contexts[-1].extend([entity_elaboration_idxs[e][elaboration]
-                                     for e in sentence['slices']
-                                     if elaboration in entity_elaboration_idxs[e]])
+                trues = sentence['tertiary_slice_ids']
+                found = [entity_elaboration_idxs[e][elaboration]
+                         for e in sentence['primary_slice_ids']
+                         if elaboration in entity_elaboration_idxs[e]]
 
-            assert len(contexts[-1]) <= 4  # Sanity check.
+                # They could be equal, but reversed
+                trues, found = sorted(trues), sorted(found)
+
+                if trues != found:
+                    # same size means different values, and it's not recoverable
+                    if len(trues) == len(found):
+                        raise SliceMismatchError(trues, found)
+
+                    # smaller size of found means grounding slice was not found
+                    # in inputs, and it's not recoverable
+                    elif len(found) < len(trues):
+                        raise SliceMismatchError(trues, found)
+
+                    # smaller size of trues means one of found is not grounding
+                    # the output sentence, it's recoverable.
+                    else:
+                        trues = found
+
+                assert len(trues) <= 2
+                contexts[-1].extend(trues)
 
             # See self._clean_sentence.__doc__
             sentence_str = self._clean_sentence(
@@ -207,10 +268,14 @@ class RotowireParser:
 
             # To compute alignment for this sentence, we iterate over all tokens
             # and check whether they can be found in grounding slices.
+            # Note that it may appear naive, because we break at the first
+            # found token, but position of copied token is not relevant here,
+            # only that it is copied. During training, scores will be gathered
+            # across all appearances of this token.
             alignment = list()
             for token in sentence_str.split():
                 _algn = 0
-                for slice_idx in sentence['slices']:
+                for slice_idx in contexts[-1]:
                     if token in input_sequence[0][slice_idx]:
                         _algn = example['source_vocab'].stoi[token]
                         assert _algn != 0
@@ -424,6 +489,7 @@ class RotoWireDataset(Dataset):
     @classmethod
     def build_from_raw_json(cls, filename, config=None,
                             dest=None, overwrite=False,
+                            raise_on_error=True,
                             vocabs=None):
         """
         Build a RotowireDataset from the jsonl <filename>.
@@ -432,6 +498,8 @@ class RotoWireDataset(Dataset):
             config (RotowireConfig): see onmt.rotowire.config.py for info
             dest (filename): if provided, will save the dataset to <dest>
             overwrite (Bool): whether to replace existing data
+            raise_on_error (Bool): whether to raise an error when a problematic
+                                   line is encountered
             vocabs (Dict[Vocab]): if not None, not build vocabs.
 
         Note that some checks/warnings are performed early to save time
@@ -463,15 +531,18 @@ class RotoWireDataset(Dataset):
 
         for idx, jsonline in tqdm.tqdm(enumerate(iterable),
                                        desc=desc, total=len(iterable)):
-            try:
-                ex, sub_main_vocab, sub_cols_vocab = parser.parse_example(jsonline)
-            except Exception as err:
-                print(f'There was an error with line {idx}')
-                raise err
-            
-            examples.append(ex)
-            main_vocab += sub_main_vocab
-            cols_vocab += sub_cols_vocab
+            ex, sub_main_vocab, sub_cols_vocab = parser.parse_example(idx, jsonline)
+
+            if ex is not None:
+                examples.append(ex)
+                main_vocab += sub_main_vocab
+                cols_vocab += sub_cols_vocab
+            elif raise_on_error:
+                break
+
+        # If any error was found, log them with a warning.
+        # If on_error == 'raise', first found error would result in break
+        parser.log_error_and_maybe_raise(do_raise=raise_on_error)
 
         if vocabs is None:
             main_specials = ['<unk>', '<pad>', '<s>', '</s>', '<ent>']

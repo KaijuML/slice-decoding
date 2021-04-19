@@ -16,6 +16,17 @@ DEFAULTS = {
 
 
 class RotowireConfig:
+    """
+    Used to control data parsing args when building a RotowireDataset.
+    DEFAULTS = {
+        'vocab_size': int(1e4),
+        'entity_size': 30,
+        'num_primary_slices': 28,
+        'keep_na': False,
+        'lowercase': False,
+    }
+    """
+
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
             if key not in DEFAULTS:
