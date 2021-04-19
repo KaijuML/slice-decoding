@@ -51,7 +51,7 @@ def train(opt):
         
     # Load dataset examples and vocabs
     dataset = RotoWireDataset.load(opt.data)
-    vocabs = dataset.vocabs()
+    vocabs = dataset.vocabs
     if checkpoint is not None:
         assert all(v == vocabs[k] for k, v in checkpoint['vocabs'].items())
 
