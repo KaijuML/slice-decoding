@@ -13,8 +13,11 @@
 from onmt.utils.misc import check_object_for_nan
 from onmt.utils.logging import logger
 
+from typing import Union
+
 import onmt.utils
 import torch
+import tqdm
 
 
 def build_trainer(opt, model, vocabs, optim, model_saver=None):
@@ -131,11 +134,20 @@ class Trainer(object):
                 Thus nothing will be saved if this parameter is None
     """
 
-    def __init__(self, model, sentence_loss, context_loss, optim,
-                 norm_method="sents", accum_count=[1],
-                 accum_steps=[0], context_loss_lambda=.2,
-                 report_manager=None, model_saver=None,
-                 average_decay=0, average_every=1, model_dtype='fp32',
+    def __init__(self,
+                 model: onmt.models.NMTModel,
+                 sentence_loss,
+                 context_loss,
+                 optim,
+                 norm_method: str ="sents",
+                 accum_count: Union[int] = [1],
+                 accum_steps: Union[int] = [0],
+                 context_loss_lambda: float = .2,
+                 report_manager: onmt.utils.ReportMgr = None,
+                 model_saver=None,
+                 average_decay: int = 0,
+                 average_every: int = 1,
+                 model_dtype: str = 'fp32',
                  earlystopper=None):
 
         # Basic attributes.
@@ -162,6 +174,10 @@ class Trainer(object):
 
         # Set model in training mode.
         self.model.train()
+
+    @property
+    def report_every(self):
+        return self.report_manager.report_every
 
     def _accum_count(self, step):
         for i in range(len(self.accum_steps)):
@@ -229,43 +245,36 @@ class Trainer(object):
         report_stats = onmt.utils.Statistics()
         self._start_report_manager(start_time=total_stats.start_time)
 
-        for i, (batches, normalization) in enumerate(
-                self._accum_batches(train_iter)):
-            step = self.optim.training_step
+        iterable = enumerate(self._accum_batches(train_iter), 1)
+        with tqdm.tqdm(total=self.report_every) as progressbar:
+            for i, (batches, normalization) in iterable:
+                step = self.optim.training_step
 
-            # Everything is done here!
-            with BatchErrorHandler(i, batches):
-                self._gradient_accumulation(batches, total_stats, report_stats)
+                # Everything is done here!
+                with BatchErrorHandler(i, batches):
+                    self._gradient_accumulation(batches, total_stats, report_stats)
 
-            if self.average_decay > 0 and i % self.average_every == 0:
-                self._update_average(step)
+                if i % progressbar.total == 0:
+                    progressbar.n = 0
+                else:
+                    progressbar.update(n=1)
+                progressbar.refresh()
 
-            report_stats = self._maybe_report_training(
-                step, train_steps,
-                self.optim.learning_rate(),
-                report_stats)
+                if self.average_decay > 0 and i % self.average_every == 0:
+                    self._update_average(step)
 
-            if valid_iter is not None and step % valid_steps == 0:
+                report_stats = self._maybe_report_training(
+                    step, train_steps,
+                    self.optim.learning_rate(),
+                    report_stats)
 
-                valid_stats = self.validate(
-                    valid_iter, moving_average=self.moving_average)
-                
-                self._report_step(self.optim.learning_rate(),
-                                  step, valid_stats=valid_stats)
-                # Run patience mechanism
-                if self.earlystopper is not None:
-                    self.earlystopper(valid_stats, step)
-                    # If the patience has reached the limit, stop training
-                    if self.earlystopper.has_stopped():
-                        break
+                if (self.model_saver is not None
+                    and (save_checkpoint_steps != 0
+                         and step % save_checkpoint_steps == 0)):
+                    self.model_saver.save(step, moving_average=self.moving_average)
 
-            if (self.model_saver is not None
-                and (save_checkpoint_steps != 0
-                     and step % save_checkpoint_steps == 0)):
-                self.model_saver.save(step, moving_average=self.moving_average)
-
-            if 0 < train_steps <= step:
-                break
+                if 0 < train_steps <= step:
+                    break
 
         if self.model_saver is not None:
             self.model_saver.save(step, moving_average=self.moving_average)
@@ -370,8 +379,8 @@ class Trainer(object):
                                                          sentence_starts,
                                                          batch.elaborations)
 
-                losses['ents'] = ents_loss
-                losses['elab'] = elab_loss
+                losses['ents'] = ents_loss / _batch.batch_size
+                losses['elab'] = elab_loss / _batch.batch_size
                     
                 # Gather stats from each batch example
                 total_stats.update(batch_stats)
