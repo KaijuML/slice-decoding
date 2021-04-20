@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from itertools import tee
+from itertools import tee, zip_longest
 
 import inspect
 import random
@@ -55,6 +55,10 @@ def nwise(iterable, n=2):
     iterables = tee(iterable, n)
     [next(iterables[i]) for i in range(n) for j in range(i)]
     return zip(*iterables)
+
+
+def grouped(iterable, n):
+    return zip_longest(*[iter(iterable)]*n)
 
 
 def block_eye(n, size, dtype=torch.uint8, device=None):

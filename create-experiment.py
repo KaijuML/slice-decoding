@@ -34,7 +34,7 @@ if __name__ == '__main__':
     os.mkdir(os.path.join(exp, 'models'))
     os.mkdir(os.path.join(exp, 'gens'))
     os.mkdir(os.path.join(exp, 'gens', 'test'))
-    os.mkdir(os.path.join(exp, 'gens', 'valid'))
+    os.mkdir(os.path.join(exp, 'gens', 'validation'))
 
     if args.copy is not None:
         copied_exp = os.path.join(experiments, args.copy)
