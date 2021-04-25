@@ -78,7 +78,11 @@ class RotowireParser:
 
     }
 
-    reverse_elaboration_mapping = {v: k for k, v in elaboration_mapping.items()}
+    reverse_elaboration_mapping = {
+        '<primary>': 'PRIMARY',
+        '<event>': 'EVENT',
+        '<time>': 'TIME',
+    }
 
     def __init__(self, config):
         if not isinstance(config, RotowireConfig):
@@ -155,6 +159,7 @@ class RotowireParser:
         entity_elaborations = list()
         for sentence in outputs:
             gt = self.elaboration_mapping.get(sentence['grounding_type'], None)
+            sentence['grounding_type'] = gt
             if gt is None:
                 raise UnknownElaborationError(sentence['grounding_type'])
 
@@ -166,16 +171,16 @@ class RotowireParser:
 
         # We first add all primary entities to the input tensors
         for view_dict in inputs:
-            view_data = view_dict[self.reverse_elaboration_mapping['<primary>']]
+            view_data = view_dict["data"][self.reverse_elaboration_mapping['<primary>']]
             self.add_input_view(view_data, cols_vocab, source_vocab, input_sequence)
 
         # We then add all elaborations that will be needed for the summary
         # We also remember for each one it index in the input_sequence
         elaboration_view_idxs = dict()
         for view_idx, elaboration in entity_elaborations:
-            view_data = inputs[view_idx][self.reverse_elaboration_mapping[elaboration]]
+            view_data = inputs[view_idx]["data"][self.reverse_elaboration_mapping[elaboration]]
             self.add_input_view(view_data, cols_vocab, source_vocab, input_sequence)
-            elaboration_view_idxs[view_idx, elaboration] = len(input_sequence[0])
+            elaboration_view_idxs[view_idx, elaboration] = len(input_sequence[0]) - 1
 
         # We can now join everything as a long string, to be split on spaces
         example['src'] = [' '.join(more_itertools.collapse(seq))
@@ -226,7 +231,7 @@ class RotowireParser:
                 contexts.append([])
             else:
                 assert len(sentence['grounding_data']) <= 2
-                contexts.append(map(int, sentence['grounding_data']))
+                contexts.append(list(map(int, sentence['grounding_data'])))
 
             # We also add the slice used for elaborations <time> & <event>
             if sentence['grounding_type'] in {'<time>', '<event>'}:
@@ -285,7 +290,7 @@ class RotowireParser:
         src_cols = ['<ent>']
 
         # Iterating over all (key, value) of the entity
-        for key, value in view_data['data'].items():
+        for key, value in view_data.items():
             if value == 'N/A' and not self.config.keep_na:
                 continue
 

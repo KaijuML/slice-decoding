@@ -19,7 +19,7 @@ class SliceMismatchError(Exception):
         
 class UnknownElaborationError(Exception):
     def __init__(self, grounding_type):
-        super().__init__()
+        super().__init__(f'{grounding_type}')
 
 
 class ContextTooLargeError(Exception):
