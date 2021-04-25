@@ -15,3 +15,13 @@ class RotowireParsingError(Exception):
 class SliceMismatchError(Exception):
     def __init__(self, trues, found):
         super().__init__()
+        
+        
+class UnknownElaborationError(Exception):
+    def __init__(self, grounding_type):
+        super().__init__()
+
+
+class ContextTooLargeError(Exception):
+    def __init__(self, sidx, ctx_size):
+        super().__init__()

@@ -13,7 +13,8 @@ from collections import Counter
 from onmt.rotowire.exceptions import (
     RotowireParsingError,
     DataAlreadyExistsError,
-    SliceMismatchError
+    UnknownElaborationError,
+    ContextTooLargeError,
 )
 
 import more_itertools
@@ -34,12 +35,14 @@ def numericalize(sentence, vocab: Vocab, add_special_tokens: bool=False):
     """
     raise TypeError(f'This function will not run for {type(sentence)}')
 
+
 @numericalize.register
 def _(sentence: str, vocab: Vocab, add_special_tokens: bool=False):
     sentence = [vocab[tok] for tok in sentence.split()]
     if add_special_tokens:
         sentence = [vocab['<s>']] + sentence + [vocab['</s>']]
     return sentence
+
 
 @numericalize.register
 def _(sentence: list, vocab: Vocab, add_special_tokens: bool=False):
@@ -74,6 +77,8 @@ class RotowireParser:
         'NONE': '<none>'
 
     }
+
+    reverse_elaboration_mapping = {v: k for k, v in elaboration_mapping.items()}
 
     def __init__(self, config):
         if not isinstance(config, RotowireConfig):
@@ -143,50 +148,43 @@ class RotowireParser:
         # First list is cell values, second list is cell column names.
         input_sequence = [list(), list()]
 
-        # This mapping will be used to find out which slice corresponds to a
-        # specific elaboration for each entity.
-        entity_elaboration_idxs = dict()
+        # Before building the input tensors, we must also consider that some
+        # primary entities will be elaborated during the summary.
+        # We take this opportunity to standardize elaboration names, and when
+        # needed cast some weird elaborations to <none>.
+        entity_elaborations = list()
+        for sentence in outputs:
+            gt = self.elaboration_mapping.get(sentence['grounding_type'], None)
+            if gt is None:
+                raise UnknownElaborationError(sentence['grounding_type'])
 
-        for sidx, slice_dict in enumerate(inputs):
+            if sentence['grounding_type'] in {'<time>', '<event>'}:
+                entity_elaborations.extend([
+                    [int(view_idx_str), sentence['grounding_type']]
+                    for view_idx_str in sentence['grounding_data']
+                ])
 
-            # Building the mapping from entity+elaboration --> slice index
-            entity = slice_dict['primary_slice_id']
-            elaboration = self.elaboration_mapping[slice_dict['type']]
-            if entity not in entity_elaboration_idxs:
-                entity_elaboration_idxs[entity] = dict()
+        # We first add all primary entities to the input tensors
+        for view_dict in inputs:
+            view_data = view_dict[self.reverse_elaboration_mapping['<primary>']]
+            self.add_input_view(view_data, cols_vocab, source_vocab, input_sequence)
 
-            assert elaboration not in entity_elaboration_idxs[entity]
-            entity_elaboration_idxs[entity][elaboration] = sidx
+        # We then add all elaborations that will be needed for the summary
+        # We also remember for each one it index in the input_sequence
+        elaboration_view_idxs = dict()
+        for view_idx, elaboration in entity_elaborations:
+            view_data = inputs[view_idx][self.reverse_elaboration_mapping[elaboration]]
+            self.add_input_view(view_data, cols_vocab, source_vocab, input_sequence)
+            elaboration_view_idxs[view_idx, elaboration] = len(input_sequence[0])
 
-            # Starting all enitity with an <ent> token, to learn aggregation
-            src_text = ['<ent>']
-            src_cols = ['<ent>']
-
-            # Iterating over all (key, value) of the entity
-            for key, value in slice_dict['data'].items():
-                if value == 'N/A' and not self.config.keep_na:
-                    continue
-
-                # noinspection PyUnresolvedReferences
-                if self.config.lowercase:
-                    value = value.lower()
-
-                src_text.append(value.replace(' ', '_'))
-                src_cols.append(key)
-
-                source_vocab.update(src_text)
-                cols_vocab.update(src_cols)
-
-            input_sequence[0].append(self.pad_entity(src_text))
-            input_sequence[1].append(self.pad_entity(src_cols))
-
+        # We can now join everything as a long string, to be split on spaces
         example['src'] = [' '.join(more_itertools.collapse(seq))
                           for seq in input_sequence]
         example['source_vocab'] = Vocab(
             source_vocab, specials=['<unk>', '<pad>', '<ent>'])
 
         # The encoder final representation is based on primary entities only
-        example['n_primaries'] = len(entity_elaboration_idxs)
+        example['n_primaries'] = len(inputs)
 
         # We also build a src_map. This mapping assigns to each source token
         # its position in the source_vocab. This is used by the copy mechanism
@@ -218,46 +216,29 @@ class RotowireParser:
         # Tracks which entities are relevant for a given sentence
         contexts = list()
 
-        for sentence in outputs:
+        for sidx, sentence in enumerate(outputs):
 
-            elaboration = self.elaboration_mapping[sentence['type']]
-            elaborations.append(elaboration)
+            elaborations.append(sentence['grounding_type'])
 
             # If elaboration is <none> then we do not add the slice.
             # The network will have to do with empty context.
-            if elaboration == '<none>':
+            if sentence['grounding_type'] == '<none>':
                 contexts.append([])
             else:
-                assert len(sentence['primary_slice_ids']) <= 2
-                contexts.append(sentence['primary_slice_ids'])
+                assert len(sentence['grounding_data']) <= 2
+                contexts.append(map(int, sentence['grounding_data']))
 
             # We also add the slice used for elaborations <time> & <event>
-            if elaboration in {'<time>', '<event>'}:
-                trues = sentence['tertiary_slice_ids']
-                found = [entity_elaboration_idxs[e][elaboration]
-                         for e in sentence['primary_slice_ids']
-                         if elaboration in entity_elaboration_idxs[e]]
+            if sentence['grounding_type'] in {'<time>', '<event>'}:
 
-                # They could be equal, but reversed
-                trues, found = sorted(trues), sorted(found)
+                contexts[-1].extend([
+                    elaboration_view_idxs[view_idx, sentence['grounding_type']]
+                    for view_idx in contexts[-1]
+                ])
 
-                if trues != found:
-                    # same size means different values, and it's not recoverable
-                    if len(trues) == len(found):
-                        raise SliceMismatchError(trues, found)
-
-                    # smaller size of found means grounding slice was not found
-                    # in inputs, and it's not recoverable
-                    elif len(found) < len(trues):
-                        raise SliceMismatchError(trues, found)
-
-                    # smaller size of trues means one of found is not grounding
-                    # the output sentence, it's recoverable.
-                    else:
-                        trues = found
-
-                assert len(trues) <= 2
-                contexts[-1].extend(trues)
+            # Sanity check: we should have at most 2 primaries & 2 elaborations
+            if not len(contexts[-1]) <= 4:
+                raise ContextTooLargeError(sidx, len(contexts[-1]))
 
             # See self._clean_sentence.__doc__
             sentence_str = self._clean_sentence(
@@ -292,6 +273,34 @@ class RotowireParser:
         example['contexts'] = contexts
 
         return example, main_vocab, cols_vocab
+
+    def add_input_view(self, view_data, cols_vocab, source_vocab, input_sequence):
+        """
+        Add a single view to the inputs of this example. This method is called
+        for all primary entities AND for elaborations relevant to the summary.
+        """
+
+        # Starting all entities with an <ent> token, to learn aggregation
+        src_text = ['<ent>']
+        src_cols = ['<ent>']
+
+        # Iterating over all (key, value) of the entity
+        for key, value in view_data['data'].items():
+            if value == 'N/A' and not self.config.keep_na:
+                continue
+
+            # noinspection PyUnresolvedReferences
+            if self.config.lowercase:
+                value = value.lower()
+
+            src_text.append(value.replace(' ', '_'))
+            src_cols.append(key)
+
+            source_vocab.update(src_text)
+            cols_vocab.update(src_cols)
+
+        input_sequence[0].append(self.pad_entity(src_text))
+        input_sequence[1].append(self.pad_entity(src_cols))
 
     def _clean_sentence(self, sentence, vocab):
         """
