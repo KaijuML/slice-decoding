@@ -5,6 +5,7 @@ import argparse
 import shutil
 import os
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Create an experiment folder")
     parser.add_argument('--name', dest='name', required=True)
@@ -14,6 +15,7 @@ def parse_args():
     args = parser.parse_args()
 
     return args
+
 
 if __name__ == '__main__':
 
@@ -27,7 +29,7 @@ if __name__ == '__main__':
 
     exp = os.path.join(experiments, args.name)
     if os.path.exists(exp):
-        raise ValueError('An experiment with this name already exists')
+        raise ValueError(f'An experiment named "{args.name}" already exists')
 
     os.mkdir(exp)
     os.mkdir(os.path.join(exp, 'data'))
