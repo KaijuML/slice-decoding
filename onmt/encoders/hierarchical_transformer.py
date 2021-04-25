@@ -179,10 +179,20 @@ class HierarchicalTransformerEncoder(torch.nn.Module):
         The mask is [bsz, n_ents, n_ents], with 0 everywhere an entity can
         attend to another entity, and filled with -inf where self-attention
         shouldn't attend.
+        In practice, all primary ents can attend to other primary ents.
+        Further, secondary ents cant attend to one another, but can attend
+        to primary ents.
         """
+
+        # First unmask all primary entities. Done via a sequence mask that is
+        # repeated for all ents (even non-primary)
         ones = sequence_mask(lengths, max_size).unsqueeze(1).expand(-1, max_size, -1)
         mask = torch.full(ones.shape, float('-inf'), device=self.device)
         mask.masked_fill_(ones, 0)
+
+        # Now, unmask non-primaries. Easily done using torch.eye
+        eye = torch.eye(mask.size(1), dtype=torch.bool, device=self.device)
+        mask.masked_fill_(eye.unsqueeze(0), 0)
         return mask
 
     def forward(self, src, lengths, n_primaries):
