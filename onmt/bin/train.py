@@ -2,7 +2,7 @@
 """I have merge train/train_single for this project."""
 
 
-from onmt.rotowire import RotoWireDataset, build_dataset_iter
+from onmt.rotowire import RotowireTrainingDataset, build_dataset_iter
 from onmt.utils.optimizers import Optimizer
 from onmt.utils.misc import set_random_seed
 from onmt.utils.parse import ArgumentParser
@@ -50,7 +50,7 @@ def train(opt):
         model_opt = opt
         
     # Load dataset examples and vocabs
-    dataset = RotoWireDataset.load(opt.data)
+    dataset = RotowireTrainingDataset.load(opt.data)
     vocabs = dataset.vocabs
     if checkpoint is not None:
         assert all(v == vocabs[k] for k, v in checkpoint['vocabs'].items())

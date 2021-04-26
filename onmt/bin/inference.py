@@ -1,5 +1,5 @@
 from onmt.utils.misc import set_random_seed, Container, grouped
-from onmt.inference import build_translator
+from onmt.inference import build_inference
 from onmt.utils.logging import logger
 from multiprocessing import Process
 
@@ -90,6 +90,10 @@ def get_parser():
     group.add_argument('--log-file', dest='log_file',
                        help='Logging preprocessing info')
 
+    group = parser.add_argument_group('Inference (high level)')
+    group.add_argument('--guided-inference', dest='guided_inference',
+                       action='store_true', help='Use the true plans or not.')
+
     # Model checkpoints, one or many
     ckpts = parser.add_mutually_exclusive_group(required=True)
     ckpts.add_argument('--checkpoints', dest="checkpoints",
@@ -125,14 +129,17 @@ def get_parser():
 
 def single(args):
     configure_process(args.seed, args.gpu)
-    translator = build_translator(args, logger)
-    translator.run(args.source_file, args.batch_size, if_file_exists='overwrite')
+    inference = build_inference(args, logger)
+    inference.run(args.source_file, args.batch_size, if_file_exists='overwrite')
 
 
 def main(args=None):
     parser = get_parser()
     args = parser.parse_args(args) if args else parser.parse_args()
     args = regularize_args(args)
+
+    if not args.guided_inference:
+        raise RuntimeError("Inference is only in guided mode for now!")
 
     logger.init_logger(args.log_file)
 

@@ -2,8 +2,8 @@
 Here I create a custom RotoWire dataset object.
 TODO: multiprocessing + logging
 """
+from onmt.rotowire.parser import RotowireTrainingParser, RotowireInferenceParser
 from onmt.rotowire.config import RotowireConfig
-from onmt.rotowire.parser import RotowireParser
 from onmt.rotowire.utils import FileIterable
 from torch.nn.utils.rnn import pad_sequence
 from onmt.utils.logging import logger
@@ -49,9 +49,10 @@ def _(sentence: list, vocab: Vocab, add_special_tokens: bool=False):
     return sentence
 
 
-class RotoWireDataset(Dataset):
+class RotowireDataset(Dataset):
     """
-    Custom RotoWire dataset.
+    Base class for custom RotoWire datasets.
+    Children of this class should implement __getitem__ and build_from_json
     """
     def __init__(self, examples, main_vocab, cols_vocab, config=None):
         
@@ -82,44 +83,6 @@ class RotoWireDataset(Dataset):
             'cols_vocab': self.cols_vocab,
             'elab_vocab': self.elab_vocab
         }
-        
-    def __getitem__(self, item):
-        # Get raw example
-        raw_example = self.examples[item]
-        
-        # Start building the actual tensor example
-        example = dict()
-        
-        # Numericalize the source, and add column names
-        example['src'] = [numericalize(seq, voc) 
-                          for seq, voc in zip(raw_example['src'],
-                                            [self.main_vocab, self.cols_vocab])]
-        example['src'] = torch.LongTensor(example['src']).transpose(0, 1)
-        
-        # Numericalize the target sentences
-        example['sentences'] = [numericalize(sentence, self.main_vocab, True)
-                                for sentence in raw_example['sentences']]
-        example['sentences'] = [torch.LongTensor(sentence)
-                                for sentence in example['sentences']]
-        
-        # Numericalize elaborations
-        elaborations = numericalize(raw_example['elaborations'], self.elab_vocab)
-        example['elaborations'] = torch.LongTensor(elaborations)
-
-        # Create and pad the contexts
-        example['contexts'] = pad_sequence([
-            torch.LongTensor(c) for c in raw_example['contexts']
-        ], batch_first=True, padding_value=-1)
-        
-        # Adding all stuff that doesn't require processing
-        example['src_map'] = raw_example['src_map']
-        example['n_primaries'] = torch.LongTensor([raw_example['n_primaries']])
-        example['src_ex_vocab'] = raw_example['source_vocab']
-        example['alignments'] = [torch.LongTensor(alignment)
-                                 for alignment in raw_example['alignments']]
-        example['indices'] = torch.LongTensor([item])
-        
-        return example
     
     def __len__(self):
         return len(self.examples)
@@ -202,14 +165,69 @@ class RotoWireDataset(Dataset):
         vocabs = torch.load(f'{prefix}.vocabs.pt')
         config = torch.load(f'{prefix}.config.pt')
         return cls(examples, **vocabs, config=config)
+
+    @classmethod
+    def build_from_raw_json(cls, *args, **kwargs):
+        raise NotImplementedError()
+
+    def _build_example_source(self, raw_example, item):
+
+        # Start building the actual tensor example
+        example = dict()
+
+        # Numericalize the source, and add column names
+        example['src'] = [numericalize(seq, voc)
+                          for seq, voc in zip(raw_example['src'],
+                                              [self.main_vocab, self.cols_vocab])]
+        example['src'] = torch.LongTensor(example['src']).transpose(0, 1)
+
+        # Adding all stuff that doesn't require processing
+        example['src_map'] = raw_example['src_map']
+        example['n_primaries'] = torch.LongTensor([raw_example['n_primaries']])
+        example['src_ex_vocab'] = raw_example['source_vocab']
+        example['indices'] = torch.LongTensor([item])
+
+        return example
+
+    def __getitem__(self, item):
+        raise NotImplementedError()
+
+
+class RotowireTrainingDataset(RotowireDataset):
+
+    def __getitem__(self, item):
+        # Get raw example
+        raw_example = self.examples[item]
+
+        example = self._build_example_source(raw_example, item)
+
+        # Numericalize the target sentences
+        example['sentences'] = [numericalize(sentence, self.main_vocab, True)
+                                for sentence in raw_example['sentences']]
+        example['sentences'] = [torch.LongTensor(sentence)
+                                for sentence in example['sentences']]
+
+        # Adding alignment information to train the copy mechanism
+        example['alignments'] = [torch.LongTensor(alignment)
+                                 for alignment in raw_example['alignments']]
+
+        # Numericalize elaborations
+        elaborations = numericalize(raw_example['elaborations'], self.elab_vocab)
+        example['elaborations'] = torch.LongTensor(elaborations)
+
+        # Create and pad the contexts
+        example['contexts'] = pad_sequence([
+            torch.LongTensor(c) for c in raw_example['contexts']
+        ], batch_first=True, padding_value=-1)
+
+        return example
     
     @classmethod
     def build_from_raw_json(cls, filename, config=None,
                             dest=None, overwrite=False,
-                            raise_on_error=True,
-                            vocabs=None):
+                            raise_on_error=True):
         """
-        Build a RotowireDataset from the jsonl <filename>.
+        Build a training RotowireDataset from the jsonl <filename>.
         ARGS:
             filename (str): Where to find raw jsonl
             config (RotowireConfig): see onmt.rotowire.config.py for info
@@ -217,7 +235,6 @@ class RotoWireDataset(Dataset):
             overwrite (Bool): whether to replace existing data
             raise_on_error (Bool): whether to raise an error when a problematic
                                    line is encountered
-            vocabs (Dict[Vocab]): if not None, not build vocabs.
 
         Note that some checks/warnings are performed early to save time
         when something goes wrong.
@@ -227,9 +244,6 @@ class RotoWireDataset(Dataset):
         if config is None:
             logger.info('No config file was given, using defaults.')
             config = RotowireConfig.from_defaults()
-
-        if vocabs is not None:
-            vocabs = cls.check_vocabs(vocabs)
 
         if dest is not None:
             cls.check_paths(dest, overwrite=overwrite)
@@ -241,7 +255,7 @@ class RotoWireDataset(Dataset):
         main_vocab = Counter()
         cols_vocab = Counter()
 
-        parser = RotowireParser(config=config)
+        parser = RotowireTrainingParser(config=config)
 
         iterable = FileIterable.from_filename(filename, fmt='jsonl')
         desc = "Reading and formatting raw data"
@@ -261,14 +275,13 @@ class RotoWireDataset(Dataset):
         # If on_error == 'raise', first found error would result in break
         parser.log_error_and_maybe_raise(do_raise=raise_on_error)
 
-        if vocabs is None:
-            main_specials = ['<unk>', '<pad>', '<s>', '</s>', '<ent>']
-            cols_specials = ['<unk>', '<pad>', '<ent>']
-            vocabs = {
-                'main_vocab': Vocab(main_vocab, max_size=config.vocab_size,
-                                    specials=main_specials),
-                'cols_vocab': Vocab(cols_vocab, specials=cols_specials)
-            }
+        main_specials = ['<unk>', '<pad>', '<s>', '</s>', '<ent>']
+        cols_specials = ['<unk>', '<pad>', '<ent>']
+        vocabs = {
+            'main_vocab': Vocab(main_vocab, max_size=config.vocab_size,
+                                specials=main_specials),
+            'cols_vocab': Vocab(cols_vocab, specials=cols_specials)
+        }
         
         dataset = cls(examples, **vocabs, config=config)
 
@@ -276,3 +289,98 @@ class RotoWireDataset(Dataset):
             dataset.dump(dest, overwrite=overwrite)
 
         return dataset
+
+
+class RotowireInferenceDataset(RotowireDataset):
+
+    def __getitem__(self, item):
+        # Only building the source during Inference
+        return self._build_example_source(self.examples[item], item)
+
+    @classmethod
+    def build_from_raw_json(cls, filename, config, vocabs, raise_on_error=True):
+
+        parser = RotowireInferenceParser(config=config, guided_inference=False)
+        return cls._build_from_raw_json(filename=filename,
+                                        config=config,
+                                        vocabs=vocabs,
+                                        parser=parser,
+                                        raise_on_error=raise_on_error)
+
+    @classmethod
+    def _build_from_raw_json(cls, filename, config, vocabs, parser, raise_on_error):
+        """
+        Build a RotowireDataset from the jsonl <filename>.
+        ARGS:
+            filename (str): Where to find raw jsonl
+            config (RotowireConfig): see onmt.rotowire.config.py for info
+            raise_on_error (Bool): whether to raise an error when a problematic
+                                   line is encountered
+            vocabs (Dict[Vocab]): if not None, not build vocabs.
+
+        Note that some checks/warnings are performed early to save time
+        when something goes wrong.
+
+        TODO: Use multiprocessing to improve performances.
+        """
+        if config is None:
+            logger.info('No config file was given, using defaults.')
+            config = RotowireConfig.from_defaults()
+
+        if vocabs is not None:
+            vocabs = cls.check_vocabs(vocabs)
+
+        logger.info(f'Prepocessing Rotowire file, found at {filename}')
+        logger.info(config)
+
+        examples = list()
+
+        iterable = FileIterable.from_filename(filename, fmt='jsonl')
+        desc = "Reading and formatting raw data"
+
+        for idx, jsonline in tqdm.tqdm(enumerate(iterable),
+                                       desc=desc, total=len(iterable)):
+            ex = parser.parse_example(idx, jsonline)
+
+            if ex is not None:
+                examples.append(ex)
+            elif raise_on_error:
+                break
+
+        # If any error was found, log them with a warning.
+        # If on_error == 'raise', first found error would result in break
+        parser.log_error_and_maybe_raise(do_raise=raise_on_error)
+
+        dataset = cls(examples, **vocabs, config=config)
+
+        return dataset
+
+
+class RotowireGuidedInferenceDataset(RotowireInferenceDataset):
+
+    @classmethod
+    def build_from_raw_json(cls, filename, config, vocabs, raise_on_error=True):
+
+        parser = RotowireInferenceParser(config=config, guided_inference=True)
+        return cls._build_from_raw_json(filename=filename,
+                                        config=config,
+                                        vocabs=vocabs,
+                                        parser=parser,
+                                        raise_on_error=raise_on_error)
+
+    def __getitem__(self, item):
+        # In guided inference, we also need elaborations and context
+
+        raw_example = self.examples[item]
+        example = self._build_example_source(raw_example, item)
+
+        # Numericalize elaborations
+        elaborations = numericalize(raw_example['elaborations'], self.elab_vocab)
+        example['elaborations'] = torch.LongTensor(elaborations)
+
+        # Create and pad the contexts
+        example['contexts'] = pad_sequence([
+            torch.LongTensor(c) for c in raw_example['contexts']
+        ], batch_first=True, padding_value=-1)
+
+        return example

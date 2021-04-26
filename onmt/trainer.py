@@ -22,7 +22,7 @@ import tqdm
 
 def build_trainer(opt, model, vocabs, optim, model_saver=None):
     """
-    Simplify `Trainer` creation based on user `opt`s*
+    Simplify `Trainer` creation based on user `opt`s
 
     Args:
         opt (:obj:`Namespace`): user options (usually from argument parsing)
@@ -79,7 +79,7 @@ class BatchError(Exception):
 
 class BatchErrorHandler:
     """
-    This handler raise informative errors to speed up dev work
+    This handler raises informative errors to speed up dev work
     """
 
     def __init__(self, step, batches):

@@ -1,4 +1,4 @@
-from onmt.rotowire import RotoWireDataset, build_dataset_iter
+from onmt.rotowire import RotowireGuidedInferenceDataset, build_dataset_iter
 from onmt.modules.copy_generator import collapse_copy_scores
 from onmt.inference import BeamSearch, GNMTGlobalScorer
 from onmt.model_builder import load_test_model
@@ -9,22 +9,30 @@ import tqdm
 import os
 
 
-def build_translator(opts, logger=None):
+def build_inference(opts, logger=None):
 
     device = torch.device(f'cuda:{opts.gpu}') if opts.gpu >= 0 else None
     vocabs, model, model_opts = load_test_model(opts.model_path, device)
 
-    translator = Translator.from_opts(
-        model,
-        vocabs,
-        opts,
-        logger=logger
-    )
+    if opts.guided_inference:
+        inference = GuidedInference.from_opts(
+            model,
+            vocabs,
+            opts,
+            logger=logger
+        )
+    else:
+        inference = Inference.from_opts(
+            model,
+            vocabs,
+            opts,
+            logger=logger
+        )
 
-    return translator
+    return inference
 
 
-class Translator:
+class BaseInference:
     def __init__(self,
                  model,
                  vocabs,
@@ -82,6 +90,90 @@ class Translator:
             logger=logger,
         )
 
+    @staticmethod
+    def reset_states(decode_strategy):
+        states = {
+            'hidden': [list(), list()],
+            'input_feed': list(),
+            'primary_mask': list(),
+            'tracking': list()
+        }
+
+        for beam in decode_strategy.states:
+            states['hidden'][0].append(beam[0]['hidden'][0][-1])
+            states['hidden'][1].append(beam[0]['hidden'][1][-1])
+            states['input_feed'].append(beam[0]['input_feed'][-1])
+            states['primary_mask'].append(beam[0]['primary_mask'][-1])
+            states['tracking'].append(beam[0]['tracking'][-1])
+
+        return {
+            'hidden': tuple([
+                torch.stack(states['hidden'][0], dim=1),
+                torch.stack(states['hidden'][1], dim=1),
+            ]),
+            'input_feed': torch.stack(states['input_feed']).unsqueeze(0),
+            'primary_mask': torch.stack(states['primary_mask']).unsqueeze(0),
+            'tracking': torch.stack(states['tracking']).unsqueeze(0),
+        }
+
+    def _build_target_tokens(self, src_length, src_vocab, src_map, pred, attn):
+        vocab = self.vocabs['main_vocab']
+        tokens = list()
+
+        for idx, tok in enumerate(pred):
+
+            if tok < len(vocab):
+                lexicalized_tok = vocab.itos[tok]
+            else:
+                lexicalized_tok = src_vocab.itos[tok - len(vocab)]
+
+            if lexicalized_tok == '<unk>':
+                _, max_index = attn['copy'][idx][:src_length].max(0)
+                tok = src_map[max_index].nonzero().item()
+                lexicalized_tok = src_vocab.itos[tok]
+            elif lexicalized_tok == '</s>':
+                break
+
+            tokens.extend(lexicalized_tok.split('_'))
+
+        return tokens
+
+    def build_translated_sentences(self,
+                                   decode_strategy,
+                                   batch):
+        results = dict()
+        results["scores"] = decode_strategy.scores
+        results["predictions"] = decode_strategy.predictions
+        results["attention"] = decode_strategy.attention
+
+        # Reordering beams using the sorted indices
+        preds, pred_score, attn, indices = list(zip(
+            *sorted(zip(results["predictions"],
+                        results["scores"],
+                        results["attention"],
+                        batch.indices.data),
+                    key=lambda x: x[-1])))
+
+        translations = list()
+        for b in range(batch.batch_size):
+            src_lengths = batch.src[1][b]
+            src_vocab = batch.src_ex_vocab[b]
+            src_map = batch.src_map[:, b]
+
+            pred_sents = [self._build_target_tokens(
+                src_lengths,
+                src_vocab,
+                src_map,
+                preds[b][n],
+                attn[b][n])
+                for n in range(1)]
+
+            translations.append(' '.join(pred_sents[0]))
+        return translations
+
+
+class GuidedInference(BaseInference):
+
     def run(self, filename, batch_size, if_file_exists='raise'):
 
         if if_file_exists not in {'raise', 'overwrite', 'append'}:
@@ -95,11 +187,11 @@ class Translator:
                 with open(self.dest, mode="w", encoding='utf8') as f:
                     pass  # overwrites
             else:
-                self.logger.info(f'Appending new generations to existing file: {self.dest}')
+                self.logger.info('Appending new generations to existing file: '
+                                 f'{self.dest}')
 
-        dataset = RotoWireDataset.build_from_raw_json(filename,
-                                                      config=self.model.config,
-                                                      vocabs=self.vocabs)
+        dataset = RotowireGuidedInferenceDataset.build_from_raw_json(
+            filename, config=self.model.config, vocabs=self.vocabs)
 
         opt = Container(batch_size=batch_size, num_threads=1)
         inference_iter = build_dataset_iter(dataset, opt, self.device, train=False)
@@ -324,83 +416,7 @@ class Translator:
 
         return log_probs, dec_attn
 
-    @staticmethod
-    def reset_states(decode_strategy):
-        states = {
-            'hidden': [list(), list()],
-            'input_feed': list(),
-            'primary_mask': list(),
-            'tracking': list()
-        }
 
-        for beam in decode_strategy.states:
-            states['hidden'][0].append(beam[0]['hidden'][0][-1])
-            states['hidden'][1].append(beam[0]['hidden'][1][-1])
-            states['input_feed'].append(beam[0]['input_feed'][-1])
-            states['primary_mask'].append(beam[0]['primary_mask'][-1])
-            states['tracking'].append(beam[0]['tracking'][-1])
-
-        return {
-            'hidden': tuple([
-                torch.stack(states['hidden'][0], dim=1),
-                torch.stack(states['hidden'][1], dim=1),
-            ]),
-            'input_feed': torch.stack(states['input_feed']).unsqueeze(0),
-            'primary_mask': torch.stack(states['primary_mask']).unsqueeze(0),
-            'tracking': torch.stack(states['tracking']).unsqueeze(0),
-        }
-
-    def _build_target_tokens(self, src_length, src_vocab, src_map, pred, attn):
-        vocab = self.vocabs['main_vocab']
-        tokens = list()
-
-        for idx, tok in enumerate(pred):
-
-            if tok < len(vocab):
-                lexicalized_tok = vocab.itos[tok]
-            else:
-                lexicalized_tok = src_vocab.itos[tok - len(vocab)]
-
-            if lexicalized_tok == '<unk>':
-                _, max_index = attn['copy'][idx][:src_length].max(0)
-                tok = src_map[max_index].nonzero().item()
-                lexicalized_tok = src_vocab.itos[tok]
-            elif lexicalized_tok == '</s>':
-                break
-
-            tokens.extend(lexicalized_tok.split('_'))
-
-        return tokens
-
-    def build_translated_sentences(self,
-                                   decode_strategy,
-                                   batch):
-        results = dict()
-        results["scores"] = decode_strategy.scores
-        results["predictions"] = decode_strategy.predictions
-        results["attention"] = decode_strategy.attention
-
-        # Reordering beams using the sorted indices
-        preds, pred_score, attn, indices = list(zip(
-            *sorted(zip(results["predictions"],
-                        results["scores"],
-                        results["attention"],
-                        batch.indices.data),
-                    key=lambda x: x[-1])))
-
-        translations = list()
-        for b in range(batch.batch_size):
-            src_lengths = batch.src[1][b]
-            src_vocab = batch.src_ex_vocab[b]
-            src_map = batch.src_map[:, b]
-
-            pred_sents = [self._build_target_tokens(
-                src_lengths,
-                src_vocab,
-                src_map,
-                preds[b][n],
-                attn[b][n])
-                for n in range(1)]
-
-            translations.append(' '.join(pred_sents[0]))
-        return translations
+class Inference(BaseInference):
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError('Not-Guided Inference is not implemented yet')

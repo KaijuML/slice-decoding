@@ -1,8 +1,8 @@
+from torchtext.vocab import Vocab
 from collections import Counter
 
 import more_itertools
 import torch
-from torchtext.vocab import Vocab
 
 from onmt.rotowire import RotowireConfig
 from onmt.utils.logging import logger
@@ -91,6 +91,50 @@ class RotowireParser:
         # empty line to emphasize warnings
         if len(self.error_logs):
             logger.warn('')
+
+    def _parse_example(self, jsonline):
+        raise NotImplementedError()
+
+    def _clean_sentence(self, sentence, vocab):
+        """
+        In here, we slightly help the copy mechanism.
+        When we built the source sequence, we took all multi-words value
+        and repalaced spaces by underscores. We replace those as well in
+        the summaries, so that the copy mechanism knows it was a copy.
+        It only happens with city names like "Los Angeles".
+        """
+        # noinspection PyUnresolvedReferences
+        if self.config.lowercase:
+            sentence = sentence.lower()
+
+        for token in vocab:
+            if '_' in token:
+                token_no_underscore = token.replace('_', ' ')
+                sentence = sentence.replace(token_no_underscore, token)
+        return sentence
+
+    def pad_entity(self, entity):
+        """
+        For parallelization purposes, we will split the input tensor into entities.
+        All entities should therefore have the same size, so that it fits into
+        a pytorch.LongTensor.
+        """
+        if (pad_size := self.config.entity_size - len(entity)) > 0:
+            entity.extend(['<pad>'] * pad_size)
+
+        # sanity check
+        if not len(entity) == self.config.entity_size:
+            msg = f"""
+                The entity size {self.config.entity_size} given in config 
+                appears to be too small: an entity of size {len(entity)} 
+                was encountered during preprocessing.
+            """
+            raise RuntimeError(msg.replace('\n', '').replace('    ', ''))
+
+        return entity
+
+
+class RotowireTrainingParser(RotowireParser):
 
     def _parse_example(self, jsonline):
 
@@ -269,40 +313,7 @@ class RotowireParser:
         input_sequence[0].append(self.pad_entity(src_text))
         input_sequence[1].append(self.pad_entity(src_cols))
 
-    def _clean_sentence(self, sentence, vocab):
-        """
-        In here, we slightly help the copy mechanism.
-        When we built the source sequence, we took all multi-words value
-        and repalaced spaces by underscores. We replace those as well in
-        the summaries, so that the copy mechanism knows it was a copy.
-        It only happens with city names like "Los Angeles".
-        """
-        # noinspection PyUnresolvedReferences
-        if self.config.lowercase:
-            sentence = sentence.lower()
 
-        for token in vocab:
-            if '_' in token:
-                token_no_underscore = token.replace('_', ' ')
-                sentence = sentence.replace(token_no_underscore, token)
-        return sentence
-
-    def pad_entity(self, entity):
-        """
-        For parallelisation purposes, we will split the input tensor into entities.
-        All entities should therefore have the same size, so that it fits into
-        a pytorch.LongTensor.
-        """
-        if (pad_size := self.config.entity_size - len(entity)) > 0:
-            entity.extend(['<pad>'] * pad_size)
-
-        # sanity check
-        if not len(entity) == self.config.entity_size:
-            msg = f"""
-                The entity size {self.config.entity_size} given in config 
-                appears to be too small: an entity of size {len(entity)} 
-                was encountered during preprocessing.
-            """
-            raise RuntimeError(msg.replace('\n', '').replace('    ', ''))
-
-        return entity
+class RotowireInferenceParser(RotowireTrainingParser):
+    def __init__(self, config, guided_inference=True):
+        super().__init__(config=config)
