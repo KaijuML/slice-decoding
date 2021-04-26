@@ -75,6 +75,7 @@ class RotowireDataset(Dataset):
         logger.info(f'Size of vocabulary: {len(self.main_vocab)}')
         logger.info(f'Number of known columns: {len(self.cols_vocab)}')
         logger.info(f'Number of known elaborations: {len(self.elab_vocab)}')
+        logger.info(f'Lastest commit: {config.commit}')
 
     @property
     def vocabs(self):
