@@ -1,6 +1,7 @@
 from configargparse import ArgumentParser
 from torchtext.vocab import Vocab
 from collections import Counter
+import subprocess
 
 
 # Below are hard-coded global configs. Try and know what you're doing
@@ -25,9 +26,15 @@ class RotowireConfig:
         'keep_na': False,
         'lowercase': False,
     }
+
+    Note that we also fetch the latest commit of the repo. If you want to
+    run this code offline, you will need to instantiate the config with
+    offline=True
     """
 
-    def __init__(self, **kwargs):
+    _git_repo = "git@github.com:KaijuML/slice-decoding.git"
+
+    def __init__(self, offline=False, **kwargs):
         for key, value in kwargs.items():
             if key not in DEFAULTS:
                 raise ValueError(f'{key} is not a known RotowireConfig option.')
@@ -41,6 +48,15 @@ class RotowireConfig:
         # Note that the elab vocab also includes <unk> and <pad> on purpose.
         elaborations = ['<primary>', '<time>', '<event>', '<none>', '<eod>']
         self.elaboration_vocab = Vocab(Counter(elaborations))
+
+        # Also getting the latest commit from the repo. Note that we cannot
+        # directly use local git repo, since this code is ran outside of it.
+        # (because of PyCharm's deployment)
+        self.commit = None
+        if not offline:
+            command = f"git ls-remote {self._git_repo} main"
+            commit = subprocess.check_output(command.split()).decode('utf-8')
+            self.commit, _ = commit.split()
 
     def __repr__(self):
         current_config = [f'{key}={getattr(self, key)}' for key in DEFAULTS]
@@ -60,7 +76,7 @@ class RotowireConfig:
     def show_defaults(cls):
         tab = '    '
         s = '\n'.join([f'{tab}{key}={value}' for key, value in DEFAULTS.items()])
-        print(f'RotowireCongigDefault(\n{s}\n)')
+        print(f'RotowireCongigDefaults(\n{s}\n)')
 
     @staticmethod
     def add_rotowire_specific_args(parent_parser):
