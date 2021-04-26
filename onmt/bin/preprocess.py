@@ -1,4 +1,4 @@
-from onmt.rotowire import RotoWireDataset
+from onmt.rotowire import RotowireTrainingDataset
 from onmt.rotowire import RotowireConfig
 from onmt.utils.logging import logger
 
@@ -46,7 +46,7 @@ def main(args=None):
     config = RotowireConfig.from_opts(args)
 
     # The following classmethod builds and save the dataset on its own
-    RotoWireDataset.build_from_raw_json(
+    RotowireTrainingDataset.build_from_raw_json(
         filename=args.train_file,
         config=config,
         dest=args.save_data,
