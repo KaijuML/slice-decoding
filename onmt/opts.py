@@ -69,6 +69,13 @@ def model_opts(parser):
     
     group.add('--transformer_ff', '-transformer_ff', type=int, default=2048,
               help='Size of hidden transformer feed-forward')
+
+    group.add('--encoder_elaboration_mask', type=str, default='diag',
+              choices=['diag', 'tril', 'none'],
+              help="How to encode elaboration in the high-level encoding. "
+                   "none is only primaries (no elaborations). "
+                   "diag is primaries + current elaboration. "
+                   "tril is primaries + all elaborations so far.")
     
     # Decoder Options
     group = parser.add_argument_group('Model (Decoder)')

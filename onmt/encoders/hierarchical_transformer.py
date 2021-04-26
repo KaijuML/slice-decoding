@@ -105,13 +105,15 @@ class HierarchicalTransformerEncoder(torch.nn.Module):
                  low_level_layers=2, high_level_layers=2,
                  low_level_heads=2, high_level_heads=2,
                  units_glu_depth=-1, chunks_glu_depth=-1,
+                 encoder_elaboration_mask='diag',
                  dim_feedforward=1000, dropout=.5):
         super().__init__()
         
         self.embeddings = embeddings
-        self.hidden_size = hidden_size=embeddings.embedding_size
+        self.hidden_size = embeddings.embedding_size
         
         self.ent_size = dataset_config.entity_size
+        self.encoder_elaboration_mask = encoder_elaboration_mask
         
         self.low_level_encoder = TransformerEncoder(hidden_size=self.hidden_size,
                                                     heads=low_level_heads,
@@ -155,6 +157,7 @@ class HierarchicalTransformerEncoder(torch.nn.Module):
             dim_feedforward=opt.transformer_ff,
             units_glu_depth=opt.low_level_glu_depth,
             chunks_glu_depth=opt.high_level_glu_depth,
+            encoder_elaboration_mask=opt.encoder_elaboration_mask,
             dropout=opt.dropout
         )
 
@@ -190,9 +193,14 @@ class HierarchicalTransformerEncoder(torch.nn.Module):
         mask = torch.full(ones.shape, float('-inf'), device=self.device)
         mask.masked_fill_(ones, 0)
 
-        # Now, unmask non-primaries. Easily done using torch.eye
-        eye = torch.eye(mask.size(1), dtype=torch.bool, device=self.device)
-        mask.masked_fill_(eye.unsqueeze(0), 0)
+        # Now, unmask non-primaries if model is configured to do so.
+        if self.encoder_elaboration_mask == 'diag':
+            eye = torch.eye(mask.size(1), dtype=torch.bool, device=self.device)
+            mask.masked_fill_(eye.unsqueeze(0), 0)
+        elif self.encoder_elaboration_mask == 'tril':
+            tril = torch.ones(*mask.shape, dtype=torch.bool, device=self.device)
+            mask.masked_fill_(torch.tril(tril), 0)
+
         return mask
 
     def forward(self, src, lengths, n_primaries):
