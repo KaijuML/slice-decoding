@@ -1,25 +1,37 @@
 from torch.utils.data import DataLoader, Sampler
 from torch.nn.utils.rnn import pad_sequence
 from onmt.utils.misc import format_device
+
+from onmt.rotowire.dataset import RotowireDataset
+from onmt.rotowire import (
+    RotowireTrainingDataset,
+    RotowireGuidedInferenceDataset
+)
+
 from typing import Union
 
 import torch
 
 
-def build_dataset_iter(dataset, opt, device_id=-1, train=True):
+def build_dataset_iter(dataset, opt, device_id=-1):
     """
     Builds an iterable from dataset, with each batch on the correct device.
 
-    :param dataset: a rotowire.RotoWire object
+    :param dataset: a rotowire.RotowireDataset object
     :param opt: the training / inference options
     :param device_id: the id of the device (-1 for cpu)
-    :param train: When train, an inifinite number of batches are returned, in random order.
-    :return:
     """
-    sampler = InfiniteRandomSampler(dataset) if train else None
+    if not isinstance(dataset, RotowireDataset):
+        raise TypeError(f'Unexpected dataset type: {type(dataset)}')
+
+    sampler = None
+    if isinstance(dataset, RotowireTrainingDataset):
+        sampler = InfiniteRandomSampler(dataset)
+
     loader = DataLoader(dataset, batch_size=opt.batch_size, sampler=sampler,
                         num_workers=opt.num_threads, collate_fn=collate_fn,
                         pin_memory=True, drop_last=False)
+
     return IterOnDevice(loader, device_id)
 
 
@@ -34,32 +46,43 @@ class IterOnDevice:
         self.iterable = iterable
         self.device = format_device(device_id)
 
+        self.do_context, self.do_target = False, False
+        if isinstance(iterable.dataset, RotowireTrainingDataset):
+            self.do_context, self.do_target = True, True
+        if isinstance(iterable.dataset, RotowireGuidedInferenceDataset):
+            self.do_context = True
+
     def __len__(self):
         return len(self.iterable)
 
-    @classmethod
-    def obj_to_device(cls, obj, device):
+    def obj_to_device(self, obj):
         if isinstance(obj, tuple):
-            return tuple(item.to(device) for item in obj)
-        return obj.to(device)
+            return tuple(item.to(self.device) for item in obj)
+        return obj.to(self.device)
 
-    @classmethod
-    def batch_to_device(cls, batch, device):
+    def batch_to_device(self, batch):
         """Move `batch` to `device`"""
         curr_device = batch.indices.device
-        if curr_device != device:
-            batch.src = cls.obj_to_device(batch.src, device)
-            batch.sentences = cls.obj_to_device(batch.sentences, device)
-            batch.alignments = cls.obj_to_device(batch.alignments, device)
-            batch.elaborations = cls.obj_to_device(batch.elaborations, device)
-            batch.contexts = cls.obj_to_device(batch.contexts, device)
-            batch.src_map = cls.obj_to_device(batch.src_map, device)
-            batch.indices = cls.obj_to_device(batch.indices, device)
-            batch.n_primaries = cls.obj_to_device(batch.n_primaries, device)
+        if curr_device != self.device:
+
+            # Batch always has source tensors
+            batch.n_primaries = self.obj_to_device(batch.n_primaries)
+            batch.src_map = self.obj_to_device(batch.src_map)
+            batch.indices = self.obj_to_device(batch.indices)
+            batch.src = self.obj_to_device(batch.src)
+
+            # During training and guided inference Batch has additional tensors
+            if self.do_context:
+                batch.elaborations = self.obj_to_device(batch.elaborations)
+                batch.contexts = self.obj_to_device(batch.contexts)
+
+            if self.do_target:
+                batch.alignments = self.obj_to_device(batch.alignments)
+                batch.sentences = self.obj_to_device(batch.sentences)
 
     def __iter__(self):
         for batch in self.iterable:
-            self.batch_to_device(batch, self.device)
+            self.batch_to_device(batch)
             yield batch
 
 
@@ -105,19 +128,22 @@ class Batch:
     }
 
     def __init__(self, fields):
-        self.src = fields.pop('src')
-        self.sentences = fields.pop('sentences')
 
+        # A Batch always has source tensors
         self.n_primaries = fields.pop('n_primaries')
-
-        self.elaborations = fields.pop('elaborations')
-        self.contexts = fields.pop('contexts')
-
-        self.src_map = fields.pop('src_map')
         self.src_ex_vocab = fields.pop('src_ex_vocab')
-        self.alignments = fields.pop('alignments')
+        self.src_map = fields.pop('src_map')
+        self.src = fields.pop('src')
 
         self.indices = fields.pop('indices')
+
+        if 'contexts' in fields:
+            self.elaborations = fields.pop('elaborations')
+            self.contexts = fields.pop('contexts')
+
+            if 'sentences' in fields:
+                self.alignments = fields.pop('alignments')
+                self.sentences = fields.pop('sentences')
 
         assert len(fields) == 0, list(fields)
 
@@ -141,7 +167,9 @@ class Batch:
         :return:
         """
         for name, dim in self._batch_dim_per_item.items():
-            item = getattr(self, name)
+            if (item := getattr(self, name, None)) is None:
+                continue
+
             if isinstance(item, tuple):
                 setattr(self, name, tuple([
                     _item.index_select(_dim, indices)
@@ -158,7 +186,9 @@ class Batch:
     def __repr__(self):
         s = f'Batch[{self.batch_size}]\n'
         for name in self._batch_dim_per_item:
-            item = getattr(self, name)
+            if (item := getattr(self, name, None)) is None:
+                continue
+
             if isinstance(item, (tuple, list)):
                 if isinstance(item[0], torch.Tensor):
                     for i, obj in enumerate(item):
@@ -175,7 +205,7 @@ class Batch:
 
 
 def classic_pad(minibatch, return_lengths=True):
-    """This is largely borrowed for torchtext v0.8"""
+    """This is largely borrowed from torchtext v0.8"""
     lengths = [x.size(0) for x in minibatch]
     padded = pad_sequence(minibatch, padding_value=1)
     if return_lengths:
@@ -264,8 +294,8 @@ def collate_fn(examples):
         - each sentence of sentences should be padded
         - there should be an equal number of sentences in sentences
         
-    Everything should be put inside a batch object, 
-    which is able to change device with a `.to(device)` method.
+    Everything should be put inside a batch object, which has several utilities
+    for Training and Inference purposes.
     """
 
     # Basic collate, to be improved for specific fields
@@ -274,20 +304,28 @@ def collate_fn(examples):
         for key, value in example.items():
             batch[key].append(value)
 
-    batch['src'] = classic_pad(batch['src'], return_lengths=True)
-    batch['sentences'] = nested_pad(batch['sentences'], include_idxs=True)
-
-    batch['elaborations'] = classic_pad(batch['elaborations'],
-                                        return_lengths=False)
-
-    batch['contexts'] = make_contexts(batch['contexts'])
-
-    batch['alignments'] = nested_pad(batch['alignments'],
-                                     include_idxs=False)
-
-    batch['src_map'] = make_src_map(batch['src_map'])
-
-    batch['indices'] = torch.LongTensor(batch['indices'])
+    # A batch always has source tensors & indices
     batch['n_primaries'] = torch.LongTensor(batch['n_primaries'])
+    batch['indices'] = torch.LongTensor(batch['indices'])
+    batch['src_map'] = make_src_map(batch['src_map'])
+    batch['src'] = classic_pad(batch['src'], return_lengths=True)
+
+    # We are in Training or GuidedInference mode
+    if (contexts := batch.get('contexts', None)) is not None:
+        if (elaborations := batch.get('elaborations', None)) is None:
+            raise RuntimeError('Both Contexts and Elaborations are needed for '
+                               'Training OR GuidedInference. (Elaborations are '
+                               'missing.)')
+
+        batch['contexts'] = make_contexts(contexts)
+        batch['elaborations'] = classic_pad(elaborations, return_lengths=False)
+
+        # We are definitely in Training mode
+        if (sentences := batch.get('sentences', None)) is not None:
+            if (alignments := batch.get('alignments', None)) is None:
+                raise RuntimeError('Both Sentences and Alignments are needed '
+                                   'for Training. (Alignments are missing.)')
+            batch['sentences'] = nested_pad(sentences, include_idxs=True)
+            batch['alignments'] = nested_pad(alignments, include_idxs=False)
 
     return Batch(batch)
