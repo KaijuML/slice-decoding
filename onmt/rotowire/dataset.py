@@ -299,8 +299,16 @@ class RotowireTrainingDataset(RotowireDataset):
 class RotowireInferenceDataset(RotowireDataset):
 
     def __getitem__(self, item):
-        # Only building the source during Inference
-        return self._build_example_source(self.examples[item], item)
+        # In Inference, we also need all possible views of the data
+
+        raw_example = self.examples[item]
+        example = self._build_example_source(raw_example, item)
+
+        example['elaborations_query_mapping'] = raw_example['elaborations_query_mapping']
+
+        return example
+
+
 
     @classmethod
     def build_from_raw_json(cls, filename, config, vocabs, raise_on_error=True):

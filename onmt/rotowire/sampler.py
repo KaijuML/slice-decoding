@@ -124,7 +124,8 @@ class Batch:
         'alignments': 1,
         'src_map': 1,
         'indices': 0,
-        'src_ex_vocab': None
+        'src_ex_vocab': None,
+        'elaborations_query_mapping': None,
     }
 
     def __init__(self, fields):
@@ -144,6 +145,8 @@ class Batch:
             if 'sentences' in fields:
                 self.alignments = fields.pop('alignments')
                 self.sentences = fields.pop('sentences')
+        else:
+            self.elaborations_query_mapping = fields.pop('elaborations_query_mapping')
 
         assert len(fields) == 0, list(fields)
 
@@ -327,5 +330,9 @@ def collate_fn(examples):
                                    'for Training. (Alignments are missing.)')
             batch['sentences'] = nested_pad(sentences, include_idxs=True)
             batch['alignments'] = nested_pad(alignments, include_idxs=False)
+
+    # We are in Inference mode
+    elif batch.get('elaborations_query_mapping', None) is None:
+        raise RuntimeError('elaborations_query_mapping is needed for Inference')
 
     return Batch(batch)
