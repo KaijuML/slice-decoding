@@ -1,29 +1,6 @@
-from onmt.utils.misc import block_eye, tile
+from onmt.utils.misc import block_eye, tile, check_object_for_nan
 
 import torch
-
-
-class ContainsNaN(Exception):
-    pass
-
-
-def check_object_for_nan(obj):
-    if isinstance(obj, torch.nn.Module):
-        for name, tensor in obj.named_parameters():
-            if (tensor != tensor).any():
-                raise ContainsNaN(name)
-    elif isinstance(obj, torch.Tensor):
-        if (obj != obj).any():
-            raise ContainsNaN()
-    elif isinstance(obj, (list, tuple)):
-        for _obj in obj:
-            check_object_for_nan(_obj)
-    elif isinstance(obj, dict):
-        for key, value in obj.items():
-            try:
-                check_object_for_nan(value)
-            except ContainsNaN:
-                raise ContainsNaN(key)
 
 
 class ContextPredictor(torch.nn.Module):
