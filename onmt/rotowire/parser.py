@@ -56,7 +56,7 @@ class RotowireParser:
 
     def parse_example(self, idx, jsonline):
         """
-        Parse an example of raw Rotowire data. Log any error found
+        Parse an example of raw Rotowire data. Log any error found.
         :param idx: index of jsonline (used for logging errors)
         :param jsonline: actual data
         :return: (parsed_example, example_main_vocab, example_cols_vocab)
@@ -94,6 +94,33 @@ class RotowireParser:
 
     def _parse_example(self, jsonline):
         raise NotImplementedError()
+
+    def build_input_view(self, view_data):
+        """
+        Builds a single view to the inputs of this example.
+        This method is called on:
+            - training & inference: all primary entities
+            - training & guided inference: elaborations relevant to the summary.
+            - inference: all elaborations
+        """
+
+        # Starting all entities with an <ent> token, to learn aggregation
+        src_text = ['<ent>']
+        src_cols = ['<ent>']
+
+        # Iterating over all (key, value) of the entity
+        for key, value in view_data.items():
+            if value == 'N/A' and not self.config.keep_na:
+                continue
+
+            # noinspection PyUnresolvedReferences
+            if self.config.lowercase:
+                value = value.lower()
+
+            src_text.append(value.replace(' ', '_'))
+            src_cols.append(key)
+
+        return self.pad_entity(src_text), self.pad_entity(src_cols)
 
     def _clean_sentence(self, sentence, vocab):
         """
@@ -178,14 +205,29 @@ class RotowireTrainingParser(RotowireParser):
         # We first add all primary entities to the input tensors
         for view_dict in inputs:
             view_data = view_dict["data"][self.reverse_elaboration_mapping['<primary>']]
-            self.add_input_view(view_data, cols_vocab, source_vocab, input_sequence)
+            src_text, src_cols = self.build_input_view(view_data)
+
+            source_vocab.update(src_text)
+            cols_vocab.update(src_cols)
+
+            input_sequence[0].append(src_text)
+            input_sequence[1].append(src_cols)
 
         # We then add all elaborations that will be needed for the summary
         # We also remember for each one it index in the input_sequence
         elaboration_view_idxs = dict()
         for view_idx, elaboration in entity_elaborations:
             view_data = inputs[view_idx]["data"][self.reverse_elaboration_mapping[elaboration]]
-            self.add_input_view(view_data, cols_vocab, source_vocab, input_sequence)
+            src_text, src_cols = self.build_input_view(view_data)
+
+            source_vocab.update(src_text)
+            cols_vocab.update(src_cols)
+
+            input_sequence[0].append(src_text)
+            input_sequence[1].append(src_cols)
+
+            # Tracking where each elaboration is stored in the input sequence.
+            # Very helpful when building contexts for decoding target sentences
             elaboration_view_idxs[view_idx, elaboration] = len(input_sequence[0]) - 1
 
         # We can now join everything as a long string, to be split on spaces
@@ -285,35 +327,163 @@ class RotowireTrainingParser(RotowireParser):
 
         return example, main_vocab, cols_vocab
 
-    def add_input_view(self, view_data, cols_vocab, source_vocab, input_sequence):
-        """
-        Add a single view to the inputs of this example. This method is called
-        for all primary entities AND for elaborations relevant to the summary.
-        """
 
-        # Starting all entities with an <ent> token, to learn aggregation
-        src_text = ['<ent>']
-        src_cols = ['<ent>']
+class RotowireInferenceParser(RotowireTrainingParser):
 
-        # Iterating over all (key, value) of the entity
-        for key, value in view_data.items():
-            if value == 'N/A' and not self.config.keep_na:
-                continue
+    def __init__(self, config, guided_inference=True):
+        super().__init__(config=config)
+        self.guided_inference = guided_inference
 
-            # noinspection PyUnresolvedReferences
-            if self.config.lowercase:
-                value = value.lower()
+    def _parse_example(self, jsonline):
 
-            src_text.append(value.replace(' ', '_'))
-            src_cols.append(key)
+        inputs, outputs = jsonline['inputs'], jsonline['outputs']
+
+        # Quickly convert inputs as an ordered list instead of a dict
+        if isinstance(inputs, dict):
+            inputs = [inputs[str(idx)] for idx in range(len(inputs))]
+
+        # What this function will return
+        example = dict()
+
+        # This is a counter restricted to this example
+        # It'll be used to build a vocab specifically for the copy mechanism.
+        source_vocab = Counter()
+
+        # This is a counter on column names
+        cols_vocab = Counter()
+
+        # Lists from input_sequence will be flattend and used model inputs.
+        # First list is cell values, second list is cell column names.
+        input_sequence = [list(), list()]
+
+        # Before building the input tensors, we must also consider that some
+        # primary entities will be elaborated during the summary.
+        # We take this opportunity to standardize elaboration names, and when
+        # needed cast some weird elaborations to <none>.
+        entity_elaborations = list()
+        for sentence in outputs:
+            gt = self.elaboration_mapping.get(sentence['grounding_type'], None)
+            sentence['grounding_type'] = gt
+            if gt is None:
+                raise UnknownElaborationError(sentence['grounding_type'])
+
+            if sentence['grounding_type'] in {'<time>', '<event>'}:
+                entity_elaborations.extend([
+                    [int(view_idx_str), sentence['grounding_type']]
+                    for view_idx_str in sentence['grounding_data']
+                ])
+
+        # We first add all primary entities to the input tensors
+        for view_dict in inputs:
+            primary_key = self.reverse_elaboration_mapping['<primary>']
+            view_data = view_dict["data"][primary_key]
+            src_text, src_cols = self.build_input_view(view_data)
 
             source_vocab.update(src_text)
             cols_vocab.update(src_cols)
 
-        input_sequence[0].append(self.pad_entity(src_text))
-        input_sequence[1].append(self.pad_entity(src_cols))
+            input_sequence[0].append(src_text)
+            input_sequence[1].append(src_cols)
 
+        # At this point, we have included all primary views already, and that
+        # might be enough for starting the decoding process. However, we need
+        # to include grounding views in case of GuidedInference OR include all
+        # views in case of Inference.
 
-class RotowireInferenceParser(RotowireTrainingParser):
-    def __init__(self, config, guided_inference=True):
-        super().__init__(config=config)
+        if self.guided_inference:
+            # For GuidedInference, we also need the grounding views for each
+            # of the summary's sentences.
+            # We also remember for each one its index in the input_sequence.
+            elaboration_view_idxs = dict()
+            for view_idx, elaboration in entity_elaborations:
+                elaboration_key = self.reverse_elaboration_mapping[elaboration]
+                view_data = inputs[view_idx]["data"][elaboration_key]
+                src_text, src_cols = self.build_input_view(view_data)
+
+                source_vocab.update(src_text)
+                cols_vocab.update(src_cols)
+
+                input_sequence[0].append(src_text)
+                input_sequence[1].append(src_cols)
+
+                # Tracking where each elaboration is stored in the input sequence.
+                # Very helpful when building contexts for decoding target sentences
+                elaboration_view_idxs[view_idx, elaboration] = len(input_sequence[0]) - 1
+        else:
+            # For normal Inference, we want to parse all views, and build an
+            # efficient mapping that can be queried at each new sentence, for
+            # new grounding views.
+            elaborations_query_mapping = dict()
+            for idx, view_dict in enumerate(inputs):
+                elaborations_query_mapping[idx] = dict()
+                for key in ['<time>', '<event>']:
+                    elaborations_key = self.reverse_elaboration_mapping[key]
+                    view_data = view_dict["data"][elaborations_key]
+                    src_text, src_cols = self.build_input_view(view_data)
+                    elaborations_query_mapping[idx][key] = [src_text, src_cols]
+
+            example['elaborations_query_mapping'] = elaborations_query_mapping
+
+        # We can now join everything as a long string, to be split on spaces
+        example['src'] = [' '.join(more_itertools.collapse(seq))
+                          for seq in input_sequence]
+        example['source_vocab'] = Vocab(
+            source_vocab, specials=['<unk>', '<pad>', '<ent>'])
+
+        # The encoder final representation is based on primary entities only
+        example['n_primaries'] = len(inputs)
+
+        # We also build a src_map. This mapping assigns to each source token
+        # its position in the source_vocab. This is used by the copy mechanism
+        # to gather probas over source_vocab using attention over src.
+        # At this stage, the map is flat, but DataLoader will one-hot everything.
+        src_map = torch.LongTensor([example['source_vocab'][tok]
+                                    for tok in example['src'][0].split()])
+        example['src_map'] = src_map
+
+        # The job might be done at that point. If we do not guide the inference
+        # process, then the Inference helper has all it needs already.
+        if not self.guided_inference:
+            return example
+
+        # From now on, we are in GuidedInference territory. We want to build
+        # the elaboration and contexts lists, so that inference can be guided
+        # with the same plan that was used by human annotators.
+
+        # This is a list containing the type of elaboration required to
+        # write the associated sentence. Currently supports:
+        #  - None
+        #  - End of Document.
+        elaborations = list()
+
+        # Tracks which entities are relevant for a given sentence
+        contexts = list()
+
+        for sidx, sentence in enumerate(outputs):
+
+            elaborations.append(sentence['grounding_type'])
+
+            # If elaboration is <none> then we do not add the slice.
+            # The network will have to do with empty context.
+            if sentence['grounding_type'] == '<none>':
+                contexts.append([])
+            else:
+                assert len(sentence['grounding_data']) <= 2
+                contexts.append(list(map(int, sentence['grounding_data'])))
+
+            # We also add the slice used for elaborations <time> & <event>
+            if sentence['grounding_type'] in {'<time>', '<event>'}:
+
+                contexts[-1].extend([
+                    elaboration_view_idxs[view_idx, sentence['grounding_type']]
+                    for view_idx in contexts[-1]
+                ])
+
+            # Sanity check: we should have at most 2 primaries & 2 elaborations
+            if not len(contexts[-1]) <= 4:
+                raise ContextTooLargeError(sidx, len(contexts[-1]))
+
+        example['elaborations'] = elaborations + ['<eod>']
+        example['contexts'] = contexts
+
+        return example
