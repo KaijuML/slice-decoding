@@ -14,22 +14,13 @@ def build_inference(opts, logger=None):
     device = torch.device(f'cuda:{opts.gpu}') if opts.gpu >= 0 else None
     vocabs, model, model_opts = load_test_model(opts.model_path, device)
 
-    if opts.guided_inference:
-        inference = GuidedInference.from_opts(
-            model,
-            vocabs,
-            opts,
-            logger=logger
-        )
-    else:
-        inference = Inference.from_opts(
-            model,
-            vocabs,
-            opts,
-            logger=logger
-        )
-
-    return inference
+    inference_cls = GuidedInference if opts.guided_inference else Inference
+    return inference_cls.from_opts(
+        model,
+        vocabs,
+        opts,
+        logger=logger
+    )
 
 
 class BaseInference:
@@ -194,7 +185,7 @@ class GuidedInference(BaseInference):
             filename, config=self.model.config, vocabs=self.vocabs)
 
         opt = Container(batch_size=batch_size, num_threads=1)
-        inference_iter = build_dataset_iter(dataset, opt, self.device, train=False)
+        inference_iter = build_dataset_iter(dataset, opt, self.device)
 
         for batch in tqdm.tqdm(inference_iter, desc="Running inference"):
             batch_predicted_sentences = self.run_on_batch(batch)

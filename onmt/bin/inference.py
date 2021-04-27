@@ -58,16 +58,22 @@ def build_container(args, step, gpu):
                               f'model_step_{step}.pt')
 
     return Container(
+        guided_inference=args.guided_inference,
+
         source_file=args.source_file,
-        dest=dest,
         model_path=model_path,
+        dest=dest,
+
         batch_size=args.batch_size,
         beam_size=args.beam_size,
-        block_ngram_repeat=args.block_ngram_repeat,
-        ignore_when_blocking=args.ignore_when_blocking,
-        log_file=args.log_file,
+
         min_sent_length=args.min_sent_length,
         max_sent_length=args.max_sent_length,
+
+        block_ngram_repeat=args.block_ngram_repeat,
+        ignore_when_blocking=args.ignore_when_blocking,
+
+        log_file=args.log_file,
         seed=args.seed,
         gpu=gpu,
     )
