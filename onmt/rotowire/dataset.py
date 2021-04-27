@@ -69,7 +69,8 @@ class RotowireDataset(Dataset):
 
         self.elab_vocab = self.config.elaboration_vocab
 
-        logger.info('Dataset loaded with the following config:')
+        cls_name = self.__class__.__name__
+        logger.info(f'{cls_name} loaded with the following config:')
         logger.info(self.config)
         logger.info(f'    Number of examples: {len(self)}')
         logger.info(f'    Size of vocabulary: {len(self.main_vocab)}')
@@ -252,7 +253,7 @@ class RotowireTrainingDataset(RotowireDataset):
         if dest is not None:
             cls.check_paths(dest, overwrite=overwrite)
 
-        logger.info(f'Prepocessing Rotowire file, found at {filename}')
+        logger.info(f'Constructing {cls.__name__}, using data at: {filename}')
         logger.info(config)
 
         examples = list()
@@ -334,7 +335,7 @@ class RotowireInferenceDataset(RotowireDataset):
         # Checking that vocabularies are valid
         vocabs = cls.check_vocabs(vocabs)
 
-        logger.info(f'Prepocessing Rotowire file, found at {filename}')
+        logger.info(f'Constructing {cls.__name__}, using data at: {filename}')
         logger.info(config)
 
         examples = list()
