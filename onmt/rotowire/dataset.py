@@ -71,11 +71,14 @@ class RotowireDataset(Dataset):
 
         logger.info('Dataset loaded with the following config:')
         logger.info(self.config)
-        logger.info(f'Number of examples: {len(self)}')
-        logger.info(f'Size of vocabulary: {len(self.main_vocab)}')
-        logger.info(f'Number of known columns: {len(self.cols_vocab)}')
-        logger.info(f'Number of known elaborations: {len(self.elab_vocab)}')
-        logger.info(f'Lastest commit: {config.commit}')
+        logger.info(f'    Number of examples: {len(self)}')
+        logger.info(f'    Size of vocabulary: {len(self.main_vocab)}')
+        logger.info(f'    Number of known columns: {len(self.cols_vocab)}')
+        logger.info(f'    Number of known elaborations: {len(self.elab_vocab)}')
+
+        latest_commit = getattr(self.config, "commit", None)
+        latest_commit = "Unknown" if latest_commit is None else latest_commit
+        logger.info(f'    Lastest commit: {latest_commit}')
 
     @property
     def vocabs(self):
@@ -328,8 +331,8 @@ class RotowireInferenceDataset(RotowireDataset):
             logger.info('No config file was given, using defaults.')
             config = RotowireConfig.from_defaults()
 
-        if vocabs is not None:
-            vocabs = cls.check_vocabs(vocabs)
+        # Checking that vocabularies are valid
+        vocabs = cls.check_vocabs(vocabs)
 
         logger.info(f'Prepocessing Rotowire file, found at {filename}')
         logger.info(config)
