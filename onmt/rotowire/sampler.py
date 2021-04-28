@@ -13,7 +13,7 @@ from typing import Union
 import torch
 
 
-def build_dataset_iter(dataset, opt, device_id=-1):
+def build_dataset_iter(dataset, opt, device_id=-1, debug_batches=None):
     """
     Builds an iterable from dataset, with each batch on the correct device.
 
@@ -25,7 +25,10 @@ def build_dataset_iter(dataset, opt, device_id=-1):
         raise TypeError(f'Unexpected dataset type: {type(dataset)}')
 
     sampler = None
-    if isinstance(dataset, RotowireTrainingDataset):
+    if debug_batches is not None:
+        sampler = DebugSampler(dataset, debug_batches)
+        opt.batch_size = len(debug_batches[0])
+    elif isinstance(dataset, RotowireTrainingDataset):
         sampler = InfiniteRandomSampler(dataset)
 
     loader = DataLoader(dataset, batch_size=opt.batch_size, sampler=sampler,
@@ -105,6 +108,31 @@ class InfiniteRandomSampler(Sampler):
         """
         while True:
             yield from torch.randperm(self.num_samples).tolist()
+
+    def __len__(self):
+        return self.num_samples
+
+
+class DebugSampler(Sampler):
+    """
+    Samples only elements contained in debug_batches.
+    For debug purposes, obviously.
+
+    Args:
+        data_source (Dataset): dataset to sample from
+        debug_batches (list of list): lists of batches (list of indices)
+    """
+
+    def __init__(self, data_source, debug_batches):
+        self.data_source = data_source
+        self.num_samples = len(debug_batches)
+        self.batches = [idx for batch in debug_batches for idx in batch]
+
+    def __iter__(self):
+        """
+        Yields specific batches and stops.
+        """
+        yield from self.batches
 
     def __len__(self):
         return self.num_samples
