@@ -207,7 +207,9 @@ def train_opts(parser):
 
     # Loss options
     group = parser.add_argument_group("Optimization - Loss")
-    group.add('--context_loss_lambda', type=float, default=.2,
+    group.add('--elab_loss_weight', type=float, default=.15,
+              help="Weight associated to context loss.")
+    group.add('--ents_loss_weight', type=float, default=.15,
               help="Weight associated to context loss.")
 
     # Optimization options

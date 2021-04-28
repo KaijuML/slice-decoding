@@ -52,7 +52,8 @@ def build_trainer(opt, model, vocabs, optim, model_saver=None):
     trainer = onmt.Trainer(model, sentence_loss, context_loss,
                            optim, norm_method,
                            accum_count, accum_steps,
-                           context_loss_lambda=opt.context_loss_lambda,
+                           elab_loss_weight=opt.elab_loss_weight,
+                           ents_loss_weight=opt.ents_loss_weight,
                            report_manager=report_manager,
                            model_saver=model_saver,
                            average_decay=average_decay,
@@ -142,7 +143,8 @@ class Trainer(object):
                  norm_method: str ="sents",
                  accum_count: Union[int] = [1],
                  accum_steps: Union[int] = [0],
-                 context_loss_lambda: float = .2,
+                 elab_loss_weight: float = .15,
+                 ents_loss_weight: float = .15,
                  report_manager: onmt.utils.ReportMgr = None,
                  model_saver=None,
                  average_decay: int = 0,
@@ -167,7 +169,8 @@ class Trainer(object):
         self.average_every = average_every
         self.model_dtype = model_dtype
         self.earlystopper = earlystopper
-        self.context_loss_lambda = context_loss_lambda
+        self.elab_loss_weight = elab_loss_weight
+        self.ents_loss_weight = ents_loss_weight
         
         for i in range(len(self.accum_count_l)):
             assert self.accum_count_l[i] > 0
@@ -376,8 +379,11 @@ class Trainer(object):
 
                 # 2.2 Predict context at the start of each sentence
                 ents_loss, elab_loss = self.context_loss(outputs,
+                                                         memory_bank,
                                                          sentence_starts,
-                                                         batch.elaborations)
+                                                         batch.n_primaries,
+                                                         batch.elaborations,
+                                                         batch.contexts)
 
                 losses['ents'] = ents_loss / _batch.batch_size
                 losses['elab'] = elab_loss / _batch.batch_size
@@ -404,12 +410,14 @@ class Trainer(object):
         """
         
         main_loss = loss_dict['main']
-        #ents_loss = loss_dict['ents']
+        ents_loss = loss_dict['ents']
         elab_loss = loss_dict['elab']
 
-        w = self.context_loss_lambda
+        w1 = self.elab_loss_weight
+        w2 = self.ents_loss_weight
+        w3 = 1 - w1 - w2
 
-        final_loss = (1 - w) * main_loss + w * elab_loss
+        final_loss = (w1 * elab_loss) + (w2 * ents_loss) + (w3 * main_loss)
 
         return final_loss
 

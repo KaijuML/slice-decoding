@@ -10,11 +10,14 @@ class ContextPredictor(torch.nn.Module):
     def __init__(self, decoder_hidden_size, elaboration_vocab):
         super().__init__()
 
-        self.elaboration_predictor = torch.nn.Linear(decoder_hidden_size,
-                                                     len(elaboration_vocab))
+        self.elab_predictor = torch.nn.Linear(decoder_hidden_size,
+                                              len(elaboration_vocab))
 
-    def forward(self, ):
-        pass
+        self.states_to_queries = torch.nn.Linear(decoder_hidden_size,
+                                                 2 * decoder_hidden_size)
+
+    def forward(self, decoder_hidden_state):
+        raise NotImplementedError("Never call ContextPredictor.forward!")
 
 
 class Aggregation(torch.nn.Module):

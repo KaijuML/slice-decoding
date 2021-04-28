@@ -1,14 +1,15 @@
 """
-Everything is has been heavily edites, as elsewhere.
+Everything is has been heavily edited, as elsewhere.
 
 The idea here is that the loss from OpenNMT is pretty much perfect, but does
 one or two things that go against what I'm trying to achieve with this code.
 
- 1) I have removed the backward call from the __call__ method. This is done so
-    that losses from all sentences can be computed and summed before backward.
+ 1) I have removed the .backward() from the __call__ method. This is done so
+    that all losses (sentence, context, elab) can be computed and summed before
+    backward.
  2) I have removed the normalization (dividing by size of batch). This is done
-    so that normalization can be done by number of sentences, which is not 
-    available when computing the loss. (Technically, it could be, but hey!)
+    so that the Trainer handles the normalization, which I find more easy to
+    deal with.
 """
 from onmt.modules.copy_generator import collapse_copy_scores
 
@@ -19,6 +20,7 @@ import onmt
 def build_loss_computes(model, vocabs, opt):
     """
     Builds my version of the CopyLossCompute from onmt.
+    Also builds a context loss, to predict next grounding views.
     """
     
     # 0. Get the device, to which we'll move the loss computes
@@ -57,12 +59,16 @@ class ContextLossCompute(torch.nn.Module):
         super().__init__()
 
         self.end_of_document_index = vocab['<eod>']
-        self.ignore_index = vocab['<pad>']
+        self.elab_pad_idx = vocab['<pad>']
+        self.ents_pad_idx = -1  # hard coded
 
-        self.criterion = torch.nn.CrossEntropyLoss(ignore_index=self.ignore_index)
+        self.elab_criterion = torch.nn.CrossEntropyLoss(ignore_index=self.elab_pad_idx)
+        self.ents_criterion = torch.nn.CrossEntropyLoss(ignore_index=self.ents_pad_idx)
         self.context_predictor = context_predictor
 
-    def forward(self, decoder_outputs, sentence_starts, target_contexts):
+    def forward(self, decoder_outputs, memory_bank,
+                sentence_starts, n_primaries,
+                target_elaborations, target_contexts):
 
         # Sanity checks.
         tgt_len, batch_size, dim = decoder_outputs.shape
@@ -75,18 +81,60 @@ class ContextLossCompute(torch.nn.Module):
                                       index=sentence_starts,
                                       dim=0)
 
-        elaboration_loss = self._compute_elaboration_loss(target_contexts,
+        elaboration_loss = self._compute_elaboration_loss(target_elaborations,
                                                           decoder_states)
 
-        # TODO: entity loss
-        ents_loss = 0
+        ents_loss = self._compute_entity_loss(sentence_starts,
+                                              target_contexts,
+                                              n_primaries,
+                                              decoder_states,
+                                              memory_bank)
         
         return ents_loss, elaboration_loss
 
-    def _compute_elaboration_loss(self, target, output):
-        bottled_output = self._bottle(output)
-        scores = self.context_predictor.elaboration_predictor(bottled_output)
-        return self.criterion(scores, target.view(-1))
+    def _compute_elaboration_loss(self, targets, dec_states):
+        scores = self.context_predictor.elab_predictor(self._bottle(dec_states))
+        return self.elab_criterion(scores, targets.view(-1))
+
+    def _compute_entity_loss(self, sentence_starts, targets, n_primaries,
+                             dec_states, memory_bank):
+
+        # First compute the two queries and split 'em
+        queries = self.context_predictor.states_to_queries(dec_states)
+        first_query, second_query = queries.chunk(2, dim=2)
+
+        # Next, compute the attention scores over all entities
+        candidates = memory_bank['high_level_repr'].permute(1, 2, 0)
+        first_scr = torch.bmm(first_query.transpose(0, 1), candidates)[:, :-1]
+        second_scr = torch.bmm(second_query.transpose(0, 1), candidates)[:, :-1]
+
+        # ALso, shape the targets as needed and use two masks:
+        #     1) Replace elaborations views by zero
+        #     2) fill with -1 when outside a sentence
+        # Note that targets have no reason to have a specific size, except that
+        # they should be at least size 4 on dim=1. In practice, no example has
+        # a target with size < 2 so this code runs, but leaving this comment
+        # for when a later bug will arise for whatever reason.
+
+        # First mask, remove elaborations from targets
+        sent_len, n_elab, batch_size = targets.shape
+        elab_mask = n_primaries.view(1, 1, -1).expand(sent_len, n_elab, -1)
+        targets = targets.masked_fill(targets > elab_mask, 0)
+
+        # Split contexts to get the first and second
+        first_ctx, second_ctx = (targets + 1).split(1, 1)[:2]
+
+        # Then, mask padding (i.e. 0s that are outstide of sentences
+        pad_mask = sentence_starts[:-1, :, 0].eq(0)
+        pad_mask[0] = False  # first sentence start is always 0 but its not pad
+        first_ctx = first_ctx.squeeze(1).masked_fill(pad_mask, -1).transpose(0, 1)
+        second_ctx = second_ctx.squeeze(1).masked_fill(pad_mask, -1).transpose(0, 1)
+
+        # finally, compute and average the losses:
+        l1 = self.ents_criterion(first_scr.transpose(1, 2), first_ctx)
+        l2 = self.ents_criterion(second_scr.transpose(1, 2), second_ctx)
+
+        return (l1 + l2) / 2
 
     @staticmethod
     def _bottle(tensor):
