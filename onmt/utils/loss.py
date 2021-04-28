@@ -119,7 +119,7 @@ class ContextLossCompute(torch.nn.Module):
         # First mask, remove elaborations from targets
         sent_len, n_elab, batch_size = targets.shape
         elab_mask = n_primaries.view(1, 1, -1).expand(sent_len, n_elab, -1)
-        targets = targets.masked_fill(targets > elab_mask, 0)
+        targets = targets.masked_fill(targets >= elab_mask, 0)
 
         # Split contexts to get the first and second
         first_ctx, second_ctx = (targets + 1).split(1, 1)[:2]
