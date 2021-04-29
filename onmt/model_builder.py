@@ -137,9 +137,15 @@ def build_base_model(model_opt, vocabs, config, checkpoint=None, device_id=None)
         def _load(module, name, ckpt):
             state_dict = ckpt.get(name, None)
             if state_dict is None:
-                logger.info(f'State dict not found: {name}')
+                logger.warn(f'State dict not found: {name}')
             else:
-                module.load_state_dict(ckpt[name], strict=False)
+                res = module.load_state_dict(ckpt[name], strict=False)
+                if len(res.missing_keys):
+                    logger.warn('The following keys were missing from the '
+                                f'{name} checkpoint: {res.missing_keys}')
+                if len(res.unexpected_keys):
+                    logger.warn('The following keys were missing from the '
+                                f'{name} checkpoint: {res.unexpected_keys}')
 
         _load(encoder, 'encoder', checkpoint)
         _load(decoder, 'decoder', checkpoint)
