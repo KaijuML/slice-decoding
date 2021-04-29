@@ -68,7 +68,10 @@ def check_object_for_nan(obj):
 
 def nwise(iterable, n=2):
     iterables = tee(iterable, n)
-    [next(iterables[i]) for i in range(n) for j in range(i)]
+    try:
+        [next(iterables[i]) for i in range(n) for j in range(i)]
+    except StopIteration:
+        return list()
     return zip(*iterables)
 
 
