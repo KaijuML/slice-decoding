@@ -5,6 +5,7 @@ from itertools import tee, zip_longest
 import inspect
 import random
 import torch
+import json
 import os
 
 
@@ -23,6 +24,12 @@ class Container:
                            f'an objects that behaves like another object (e.g. '
                            f'a batch, a namespace, etc.). Find where this '
                            f'container is used in the code and fix this issue!')
+
+    def __repr__(self):
+        try:
+            return f'Container({json.dumps(self.__dict__, indent=4)})'
+        except TypeError:
+            return f'Container(size={len(self.__dict__)})'
 
 
 def format_device(device_or_device_id):
