@@ -1,4 +1,7 @@
+from onmt.utils.misc import nwise
+import itertools
 import torch
+import copy
 
 
 class DecodeStrategy(object):
@@ -57,13 +60,16 @@ class DecodeStrategy(object):
     """
 
     def __init__(self, vocab, batch_size, parallel_paths, min_length, max_length,
-                 block_ngram_repeat, exclusion_tokens, init_token='<s>',
-                 return_attention=True):
+                 block_ngram_repeat, previous_tokens, exclusion_tokens,
+                 init_token='<s>', return_attention=True):
 
-        # magic indices
-        self.pad = vocab['<pad>']
-        self.bos = vocab['<s>']
-        self.eos = vocab['</s>']
+        # Keeping the vocab for various ops
+        self.vocab =vocab
+
+        # Magic indices
+        self.pad = self.vocab['<pad>']
+        self.bos = self.vocab['<s>']
+        self.eos = self.vocab['</s>']
 
         self.parallel_paths = parallel_paths
         self.batch_size = batch_size
@@ -76,7 +82,7 @@ class DecodeStrategy(object):
 
         # Last predicted tokens, initialized with self.bos
         self.alive_seq = torch.full(
-            [self.n_paths, 1], vocab[init_token], dtype=torch.long)
+            [self.n_paths, 1], self.vocab[init_token], dtype=torch.long)
 
         # Tracking indices of finished beams.
         self.is_finished = torch.zeros(self.shape, dtype=torch.uint8)
@@ -91,7 +97,7 @@ class DecodeStrategy(object):
         self.max_length = max_length
 
         self.block_ngram_repeat = block_ngram_repeat
-        self.forbidden_tokens = [dict() for _ in range(self.n_paths)]
+        self.forbidden_tokens = self.build_forbidden_tokens(previous_tokens)
 
         self.exclusion_tokens = exclusion_tokens
 
@@ -105,6 +111,30 @@ class DecodeStrategy(object):
     @property
     def shape(self):
         return self.batch_size, self.parallel_paths
+
+    def build_forbidden_tokens(self, previous_tokens=None):
+        if previous_tokens is None:
+            return [dict() for _ in range(self.n_paths)]
+
+        if not len(previous_tokens) == self.batch_size:
+            raise ValueError('Forbidden tokens must be an ordered sequence of '
+                             'tokens for each example of the batch.')
+
+        previous_tokens = [
+            [self.vocab[tok] for tok in sentence.split()]
+            for sentence in previous_tokens
+        ]
+
+        forbidden_tokens = [dict() for _ in range(self.batch_size)]
+        for batch_idx, tokens in enumerate(previous_tokens):
+            for toks in nwise(tokens, self.block_ngram_repeat):
+                forbidden_tokens[batch_idx].setdefault(toks[:-1], set())
+                forbidden_tokens[batch_idx][toks[:-1]].add(toks[-1])
+
+        return list(itertools.chain.from_iterable(
+            [copy.deepcopy(fb_tokens) for _ in range(self.parallel_paths)]
+            for fb_tokens in forbidden_tokens
+        ))
 
     def initialize(self, device=None, *args, **kwargs):
         """
@@ -189,7 +219,7 @@ class DecodeStrategy(object):
             # Reordering forbidden_tokens following beam selection
             # We rebuild a dict to ensure we get the value and not the pointer
             forbidden_tokens.append(
-                dict(self.forbidden_tokens[path_idx]))
+                copy.deepcopy(self.forbidden_tokens[path_idx]))
 
             # Grabing the newly selected tokens and associated ngram
             current_ngram = tuple(seq[-n:].tolist())

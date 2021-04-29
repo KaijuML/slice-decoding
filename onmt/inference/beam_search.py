@@ -54,8 +54,8 @@ class BeamSearch(DecodeStrategy):
     """
 
     def __init__(self, vocab, batch_size, beam_size, min_length, max_length,
-                 block_ngram_repeat, exclusion_tokens, init_token='<s>',
-                 global_scorer=None, n_best=1, ratio=0):
+                 block_ngram_repeat, previous_tokens, exclusion_tokens,
+                 init_token='<s>', global_scorer=None, n_best=1, ratio=0):
 
         super().__init__(
             vocab=vocab,
@@ -64,6 +64,7 @@ class BeamSearch(DecodeStrategy):
             min_length=min_length,
             max_length=max_length,
             block_ngram_repeat=block_ngram_repeat,
+            previous_tokens=previous_tokens,
             exclusion_tokens=exclusion_tokens,
             init_token=init_token,
             return_attention=True,
