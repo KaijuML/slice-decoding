@@ -44,6 +44,7 @@ def build_container(args, step, gpu):
     """
     hparams = [
         ['step', step],
+        ['guided', args.guided_inference],
         ['bms', args.beam_size],
         ['blk', args.block_ngram_repeat]
     ]

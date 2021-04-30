@@ -1,8 +1,14 @@
-from onmt.rotowire import RotowireGuidedInferenceDataset, build_dataset_iter
 from onmt.modules.copy_generator import collapse_copy_scores
 from onmt.inference import BeamSearch, GNMTGlobalScorer
+from onmt.rotowire.dataset import numericalize
 from onmt.model_builder import load_test_model
 from onmt.utils.misc import Container
+
+from onmt.rotowire import (
+    RotowireGuidedInferenceDataset,
+    RotowireInferenceDataset,
+    build_dataset_iter
+)
 
 import torch
 import tqdm
@@ -10,7 +16,6 @@ import os
 
 
 def build_inference(opts, logger=None):
-
     device = torch.device(f'cuda:{opts.gpu}') if opts.gpu >= 0 else None
     vocabs, model, model_opts = load_test_model(opts.model_path, device)
 
@@ -57,6 +62,9 @@ class BaseInference:
         self.dest = dest
         self.logger = logger
 
+        # This should be specified by children of this base class
+        self.is_guided_inference = None
+
     @property
     def device(self):
         return self.model.device
@@ -81,90 +89,6 @@ class BaseInference:
             logger=logger,
         )
 
-    @staticmethod
-    def reset_states(decode_strategy):
-        states = {
-            'hidden': [list(), list()],
-            'input_feed': list(),
-            'primary_mask': list(),
-            'tracking': list()
-        }
-
-        for beam in decode_strategy.states:
-            states['hidden'][0].append(beam[0]['hidden'][0][-1])
-            states['hidden'][1].append(beam[0]['hidden'][1][-1])
-            states['input_feed'].append(beam[0]['input_feed'][-1])
-            states['primary_mask'].append(beam[0]['primary_mask'][-1])
-            states['tracking'].append(beam[0]['tracking'][-1])
-
-        return {
-            'hidden': tuple([
-                torch.stack(states['hidden'][0], dim=1),
-                torch.stack(states['hidden'][1], dim=1),
-            ]),
-            'input_feed': torch.stack(states['input_feed']).unsqueeze(0),
-            'primary_mask': torch.stack(states['primary_mask']).unsqueeze(0),
-            'tracking': torch.stack(states['tracking']).unsqueeze(0),
-        }
-
-    def _build_target_tokens(self, src_length, src_vocab, src_map, pred, attn):
-        vocab = self.vocabs['main_vocab']
-        tokens = list()
-
-        for idx, tok in enumerate(pred):
-
-            if tok < len(vocab):
-                lexicalized_tok = vocab.itos[tok]
-            else:
-                lexicalized_tok = src_vocab.itos[tok - len(vocab)]
-
-            if lexicalized_tok == '<unk>':
-                _, max_index = attn['copy'][idx][:src_length].max(0)
-                tok = src_map[max_index].nonzero().item()
-                lexicalized_tok = src_vocab.itos[tok]
-            elif lexicalized_tok == '</s>':
-                break
-
-            tokens.extend(lexicalized_tok.split('_'))
-
-        return tokens
-
-    def build_translated_sentences(self,
-                                   decode_strategy,
-                                   batch):
-        results = dict()
-        results["scores"] = decode_strategy.scores
-        results["predictions"] = decode_strategy.predictions
-        results["attention"] = decode_strategy.attention
-
-        # Reordering beams using the sorted indices
-        preds, pred_score, attn, indices = list(zip(
-            *sorted(zip(results["predictions"],
-                        results["scores"],
-                        results["attention"],
-                        batch.indices.data),
-                    key=lambda x: x[-1])))
-
-        translations = list()
-        for b in range(batch.batch_size):
-            src_lengths = batch.src[1][b]
-            src_vocab = batch.src_ex_vocab[b]
-            src_map = batch.src_map[:, b]
-
-            pred_sents = [self._build_target_tokens(
-                src_lengths,
-                src_vocab,
-                src_map,
-                preds[b][n],
-                attn[b][n])
-                for n in range(1)]
-
-            translations.append(' '.join(pred_sents[0]))
-        return translations
-
-
-class GuidedInference(BaseInference):
-
     def run(self, filename, batch_size, if_file_exists='raise'):
 
         if if_file_exists not in {'raise', 'overwrite', 'append'}:
@@ -181,7 +105,11 @@ class GuidedInference(BaseInference):
                 self.logger.info('Appending new generations to existing file: '
                                  f'{self.dest}')
 
-        dataset = RotowireGuidedInferenceDataset.build_from_raw_json(
+        dataset_cls = RotowireInferenceDataset
+        if self.is_guided_inference:
+            dataset_cls = RotowireGuidedInferenceDataset
+
+        dataset = dataset_cls.build_from_raw_json(
             filename, config=self.model.config, vocabs=self.vocabs)
 
         opt = Container(batch_size=batch_size, num_threads=1)
@@ -194,7 +122,7 @@ class GuidedInference(BaseInference):
                 for predicted_sentences in batch_predicted_sentences:
                     pred = ' '.join(sent.strip('<s> ')
                                     for sent in predicted_sentences)
-                    f.write(f"{pred}\n")
+                    f.write(f"{pred.replace('_', ' ')}\n")
 
     def run_on_batch(self, batch):
 
@@ -202,7 +130,7 @@ class GuidedInference(BaseInference):
         warn_indices = batch.indices.clone()
 
         # Count number of planned sentences
-        n_sentences = batch.elaborations.size(0)
+        n_sentences = self.count_nb_planned_sentences(batch)
 
         # prepare final outputs
         all_sentences = [list() for _ in range(batch.batch_size)]
@@ -215,48 +143,23 @@ class GuidedInference(BaseInference):
             true_memory_bank = self.model.encoder(*batch.src, batch.n_primaries)
             true_lengths = batch.src[1]
 
+        # Init previous states to facilitate code
+        prev_states = None
+
         # Generate sentences one by one using beam search
         for sent_idx in range(n_sentences):
 
-            # Create list of examples that are not done. We know an example is done when
-            # it elaboration is 2 (<eod>) or 1 (<pad>).
-            valid_examples = batch.elaborations[sent_idx].ge(3).nonzero().squeeze(1)
-            if not len(valid_examples):
+            current_sentences, memory_bank, src_lengths = self.prep_sentence_generation(
+                batch, sent_idx, current_sentences,
+                prev_states, true_lengths, true_memory_bank)
+
+            if current_sentences is None:
+                assert memory_bank is None
+                assert src_lengths is None
                 if sent_idx != n_sentences - 1:
-                    self.logger.warning('Stopping generation earlier than '
-                                        f'expected, for batch={warn_indices}')
+                    self.logger.warn('Stopping generation earlier than '
+                                     f'expected, for batch={warn_indices}')
                 break
-
-            # Keep track of current sentences
-            current_sentences = [current_sentences[idx] for idx in valid_examples]
-
-            # Filter batch examples
-            batch.index_select(valid_examples)
-
-            # Also filter the true_memory_bank and true_src_lengths
-            true_lengths = true_lengths.index_select(dim=0, index=valid_examples)
-            true_memory_bank = {name: tensor.index_select(dim=1, index=valid_examples)
-                                for name, tensor in true_memory_bank.items()}
-
-            # Now we can start the process of generating one sentence using beam search
-
-            # Clone the memory bank to avoid messing anything up during beam search
-            # (e.g. orderding, done beams, etc.)
-            src_lengths = true_lengths.clone()
-            memory_bank = {name: tensor.clone() for name, tensor in true_memory_bank.items()}
-
-            # Initialize decoder and also filter its states to keep only valid examples
-            if not sent_idx:
-                self.model.decoder.init_state(memory_bank['game_repr'],
-                                              memory_bank['primary_mask'])
-            else:
-                self.model.decoder.set_state(prev_states)
-            fn = lambda state, dim: state.index_select(dim, valid_examples)
-            self.model.decoder.map_state(fn)
-
-            # Also add contexts and elaborations to memory_bank
-            memory_bank['contexts'] = batch.contexts[sent_idx:sent_idx + 1].transpose(1, 2).contiguous()
-            memory_bank['elaborations'] = batch.elaborations[sent_idx:sent_idx + 1]
 
             # We will decode each sentence using beam search
             scorer_opt = Container(
@@ -272,6 +175,7 @@ class GuidedInference(BaseInference):
                 min_length=self.min_sent_length,
                 max_length=self.max_sent_length,
                 block_ngram_repeat=self.block_ngram_repeat,
+                previous_tokens=[' '.join(sents) for sents in current_sentences],
                 exclusion_tokens=self.ignore_when_blocking,
                 init_token='<s>' if not sent_idx else '</s>',
                 global_scorer=GNMTGlobalScorer.from_opt(scorer_opt),
@@ -291,6 +195,13 @@ class GuidedInference(BaseInference):
             prev_states = self.reset_states(decode_strategy)
 
         return all_sentences
+
+    def count_nb_planned_sentences(self, batch):
+        raise NotImplementedError()
+
+    def prep_sentence_generation(self, batch, sent_idx, current_sentences,
+                                 prev_states, true_lengths, true_memory_bank):
+        raise NotImplementedError()
 
     def predict_one_sentence(self, decode_strategy, batch,
                              memory_bank, src_lengths):
@@ -407,7 +318,336 @@ class GuidedInference(BaseInference):
 
         return log_probs, dec_attn
 
+    @staticmethod
+    def reset_states(decode_strategy):
+        states = {
+            'hidden': [list(), list()],
+            'input_feed': list(),
+            'primary_mask': list(),
+            'tracking': list()
+        }
+
+        for beam in decode_strategy.states:
+            states['hidden'][0].append(beam[0]['hidden'][0][-1])
+            states['hidden'][1].append(beam[0]['hidden'][1][-1])
+            states['input_feed'].append(beam[0]['input_feed'][-1])
+            states['primary_mask'].append(beam[0]['primary_mask'][-1])
+            states['tracking'].append(beam[0]['tracking'][-1])
+
+        return {
+            'hidden': tuple([
+                torch.stack(states['hidden'][0], dim=1),
+                torch.stack(states['hidden'][1], dim=1),
+            ]),
+            'input_feed': torch.stack(states['input_feed']).unsqueeze(0),
+            'primary_mask': torch.stack(states['primary_mask']).unsqueeze(0),
+            'tracking': torch.stack(states['tracking']).unsqueeze(0),
+        }
+
+    def _build_target_tokens(self, src_length, src_vocab, src_map, pred, attn):
+        vocab = self.vocabs['main_vocab']
+        tokens = list()
+
+        for idx, tok in enumerate(pred):
+
+            if tok < len(vocab):
+                lexicalized_tok = vocab.itos[tok]
+            else:
+                lexicalized_tok = src_vocab.itos[tok - len(vocab)]
+
+            if lexicalized_tok == '<unk>':
+                _, max_index = attn['copy'][idx][:src_length].max(0)
+                tok = src_map[max_index].nonzero().item()
+                lexicalized_tok = src_vocab.itos[tok]
+            elif lexicalized_tok == '</s>':
+                break
+
+            tokens.append(lexicalized_tok)
+
+        return tokens
+
+    def build_translated_sentences(self,
+                                   decode_strategy,
+                                   batch):
+        results = dict()
+        results["scores"] = decode_strategy.scores
+        results["predictions"] = decode_strategy.predictions
+        results["attention"] = decode_strategy.attention
+
+        # Reordering beams using the sorted indices
+        preds, pred_score, attn, indices = list(zip(
+            *sorted(zip(results["predictions"],
+                        results["scores"],
+                        results["attention"],
+                        batch.indices.data),
+                    key=lambda x: x[-1])))
+
+        translations = list()
+        for b in range(batch.batch_size):
+            src_lengths = batch.src[1][b]
+            src_vocab = batch.src_ex_vocab[b]
+            src_map = batch.src_map[:, b]
+
+            pred_sents = [self._build_target_tokens(
+                src_lengths,
+                src_vocab,
+                src_map,
+                preds[b][n],
+                attn[b][n])
+                for n in range(1)]
+
+            translations.append(' '.join(pred_sents[0]))
+        return translations
+
 
 class Inference(BaseInference):
+
     def __init__(self, *args, **kwargs):
-        raise NotImplementedError('Not-Guided Inference is not implemented yet')
+        super(Inference, self).__init__(*args, **kwargs)
+        self.is_guided_inference = False
+
+    def count_nb_planned_sentences(self, batch):
+        return 20
+
+    def add_elaboration_to_batch(self, batch, batch_idx, ent, elab_str,
+                                 elaborations_query_mapping,
+                                 reverse_elaboration_mapping):
+
+        main_voc, cols_voc = self.vocabs['main_vocab'], self.vocabs['cols_vocab']
+        entity_size = self.model.config.entity_size
+
+        # Unpack original source
+        src, src_lengths = batch.src
+
+        vals = elaborations_query_mapping[ent.item() - 1][elab_str][0]
+        cols = elaborations_query_mapping[ent.item() - 1][elab_str][1]
+
+        assert len(vals) == len(cols) == entity_size
+
+        # Adding litteral values to src_ex_vocab
+        vocab = batch.src_ex_vocab[batch_idx]
+        for val in vals:
+            vocab.freqs[val] += 1
+            if val not in vocab.stoi:
+                vocab.itos.append(val)
+                vocab.stoi[val] = len(vocab.itos) - 1
+
+        kwargs = {'dtype': torch.long, "device": self.device}
+
+        # Padding src and src_map
+        if (pad := len(vocab) - batch.src_map[:, batch_idx].size(1)) > 0:
+            dims = list(batch.src_map.shape); dims[2] = pad
+            padding = torch.zeros(*dims, **kwargs)
+            batch.src_map = torch.cat([batch.src_map, padding], dim=2)
+
+        if (pad := src_lengths[batch_idx].item() + len(vals) - src_lengths.max()) > 0:
+            dims = list(batch.src[0].shape); dims[0] = pad
+            padding = torch.zeros(*dims, **kwargs)
+            src = torch.cat([src, padding], dim=0)
+
+            dims = list(batch.src_map.shape); dims[0] = pad
+            padding = torch.zeros(*dims, **kwargs)
+            batch.src_map = torch.cat([batch.src_map, padding], dim=0)
+
+        start = src_lengths[batch_idx].item()
+
+        # adding values to src_map for the copy mechanism
+        for j, tok in enumerate(vals, start):
+            batch.src_map[j, batch_idx, vocab[tok]] = 1
+
+        # adding values to src
+        _src = [numericalize(seq, voc) for seq, voc in zip([vals, cols],
+                                                           [main_voc, cols_voc])]
+        _src = torch.tensor(_src, **kwargs).transpose(0, 1)
+        src[start:start + len(vals), batch_idx] = _src
+
+        # incrementing lengths
+        src_lengths[batch_idx] += _src.size(0)
+
+        # pack modified source
+        batch.src = src, src_lengths
+
+        # Add this elaboration to the reverse mapping
+        ridx = (src_lengths[batch_idx] // entity_size) - 1
+        reverse_elaboration_mapping[ent, elab_str] = ridx
+
+    def prep_sentence_generation(self, batch, sent_idx, current_sentences,
+                                 prev_states, true_lengths, true_memory_bank):
+        """
+        Here, we need to predict the grounding entities, as well as the
+        elaboration type. Further, if elaboration type is <eod> we prune
+        the terminated descriptions.
+        """
+
+        # Initialize decoder with game_repr or states at the end of prev sent
+        if not sent_idx:
+            self.model.decoder.init_state(true_memory_bank['game_repr'],
+                                          true_memory_bank['primary_mask'])
+        else:
+            self.model.decoder.set_state(prev_states)
+
+        # Predict elaborations based on last decoder states
+        dec_states = self.model.decoder.state['input_feed'].squeeze(0)
+        with torch.no_grad():
+            elab_logits = self.model.context_predictor.elab_predictor(dec_states)
+            elaborations = elab_logits.topk(1, dim=-1).indices.squeeze(1)
+
+        # Create list of examples that are not done. We know an example is done
+        # when its elaboration is 2 (<eod>) or 1 (<pad>).
+        valid_examples = elaborations.ge(3).nonzero().squeeze(1)
+        if (batch_size := valid_examples.size()) == 0:
+            return None, None, None
+
+        # Keep track of current sentences
+        current_sentences = [current_sentences[idx] for idx in valid_examples]
+
+        # Filter batch examples
+        batch.index_select(valid_examples)
+        elaborations = elaborations.index_select(dim=0, index=valid_examples)
+
+        # Also filter the true_memory_bank and true_src_lengths
+        true_lengths = true_lengths.index_select(dim=0, index=valid_examples)
+        true_memory_bank = {name: tensor.index_select(dim=1, index=valid_examples)
+                            for name, tensor in true_memory_bank.items()}
+
+        # Now we can start the process of generating one sentence using beam search
+
+        # filter decoder's states to keep only valid examples
+        fn = lambda state, dim: state.index_select(dim, valid_examples)
+        self.model.decoder.map_state(fn)
+
+        # Also computing grounding entities and elaborations to memory_bank
+        with torch.no_grad():
+
+            # First compute the two queries
+            queries = self.model.context_predictor.states_to_queries(dec_states)
+
+        # split 'em
+        first_query, second_query = queries.chunk(2, dim=1)
+
+        # Next, compute the attention scores over all entities
+        candidates = true_memory_bank['high_level_repr'].permute(1, 2, 0)
+        first_scr = torch.bmm(first_query.unsqueeze(1), candidates)
+        second_scr = torch.bmm(second_query.unsqueeze(1), candidates)
+
+        first_entity = first_scr.topk(1, dim=2).indices.view(batch_size)
+        second_entity = second_scr.topk(1, dim=2).indices.view(batch_size)
+
+        # Concat the chosen entities into same array, and add padding for elaborations
+        contexts = torch.stack([first_entity, second_entity], dim=1)
+        contexts = torch.cat([contexts, torch.zeros(batch_size, 2, device=contexts.device)], dim=1)
+
+        reverse_elaboration_mapping = [dict() for _ in range(batch_size)]
+        for batch_idx in range(batch_size):
+
+            elab = elaborations[batch_idx].item()
+
+            if elab == self.vocabs['elab_vocab']['<primary>']:
+                continue
+
+            elif elab == self.vocabs['elab_vocab']['<none>']:
+                contexts[batch_idx] = 0
+
+            elif elab == self.vocabs['elab_vocab']['<event>']:
+                for eidx, ent in enumerate(contexts[batch_idx, :2], 2):
+                    if ent > 0:
+
+                        if (ent, '<event>') not in reverse_elaboration_mapping[batch_idx]:
+                            self.add_elaboration_to_batch(
+                                batch, batch_idx, ent, '<event>',
+                                batch.elaborations_query_mapping[batch_idx],
+                                reverse_elaboration_mapping[batch_idx]
+                            )
+
+                        _idx = reverse_elaboration_mapping[batch_idx][ent, '<event>']
+                        contexts[batch_idx][eidx] = _idx
+
+            elif elab == self.vocabs['elab_vocab']['<time>']:
+                for eidx, ent in enumerate(contexts[batch_idx, :2], 2):
+                    if ent > 0:
+
+                        if (ent, '<time>') not in reverse_elaboration_mapping[batch_idx]:
+                            self.add_elaboration_to_batch(
+                                batch, batch_idx, ent, '<time>',
+                                batch.elaborations_query_mapping[batch_idx],
+                                reverse_elaboration_mapping[batch_idx]
+                            )
+
+                        _idx = reverse_elaboration_mapping[batch_idx][ent, '<time>']
+                        contexts[batch_idx][eidx] = _idx
+
+            else:
+                raise RuntimeError(f'Unexpected elaboration: {elab}')
+
+        # Not the most efficient thing, but the easiest by fat:
+        # we recompute the whole encoding of the source, with the added entities
+        with torch.no_grad():
+            memory_bank = self.model.encoder(*batch.src, batch.n_primaries)
+
+        # Now, we need to replace all keys of true_memory_bank,
+        # without creating a new object (and lengths)
+        true_lengths[:] = batch.src[1]
+        for key, value in memory_bank.items():
+            true_memory_bank[key] = value
+
+        # Clone the memory bank to avoid messing anything up during beam search
+        # (e.g. ordering, done beams, etc.)
+        src_lengths = true_lengths.clone()
+        memory_bank = {name: tensor.clone() for name, tensor in true_memory_bank.items()}
+
+        memory_bank['contexts'] = contexts.unsqueeze(0)
+        memory_bank['elaborations'] = elaborations.unsqueeze(0)
+
+        return current_sentences, memory_bank, src_lengths
+
+
+class GuidedInference(BaseInference):
+
+    def __init__(self, *args, **kwargs):
+        super(GuidedInference, self).__init__(*args, **kwargs)
+        self.is_guided_inference = True
+
+    def count_nb_planned_sentences(self, batch):
+        return batch.elaborations.size(0)
+
+    def prep_sentence_generation(self, batch, sent_idx, current_sentences,
+                                 prev_states, true_lengths, true_memory_bank):
+
+        # Create list of examples that are not done. We know an example is done
+        # when its elaboration is 2 (<eod>) or 1 (<pad>).
+        valid_examples = batch.elaborations[sent_idx].ge(3).nonzero().squeeze(1)
+        if not len(valid_examples):
+            return None, None, None
+
+        # Keep track of current sentences
+        current_sentences = [current_sentences[idx] for idx in valid_examples]
+
+        # Filter batch examples
+        batch.index_select(valid_examples)
+
+        # Also filter the true_memory_bank and true_src_lengths
+        true_lengths = true_lengths.index_select(dim=0, index=valid_examples)
+        true_memory_bank = {name: tensor.index_select(dim=1, index=valid_examples)
+                            for name, tensor in true_memory_bank.items()}
+
+        # Now we can start the process of generating one sentence using beam search
+        # Clone the memory bank to avoid messing anything up during beam search
+        # (e.g. ordering, done beams, etc.)
+        src_lengths = true_lengths.clone()
+        memory_bank = {name: tensor.clone() for name, tensor in true_memory_bank.items()}
+
+        # Initialize decoder and also filter its states to keep only valid examples
+        if not sent_idx:
+            self.model.decoder.init_state(memory_bank['game_repr'],
+                                          memory_bank['primary_mask'])
+        else:
+            self.model.decoder.set_state(prev_states)
+
+        fn = lambda state, dim: state.index_select(dim, valid_examples)
+        self.model.decoder.map_state(fn)
+
+        # Also add contexts and elaborations to memory_bank
+        memory_bank['contexts'] = batch.contexts[sent_idx:sent_idx + 1].transpose(1, 2).contiguous()
+        memory_bank['elaborations'] = batch.elaborations[sent_idx:sent_idx + 1]
+
+        return current_sentences, memory_bank, src_lengths
