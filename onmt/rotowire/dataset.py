@@ -30,7 +30,7 @@ def numericalize(sentence, vocab: Vocab, add_special_tokens: bool=False):
         
     Note: using singledispatch is for fun and not really required here!
     """
-    raise TypeError(f'This function will not run for {type(sentence)}')
+    raise TypeError(f'numericalize function will not run for {type(sentence)}')
 
 
 @numericalize.register
