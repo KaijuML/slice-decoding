@@ -145,9 +145,6 @@ def main(args=None):
     args = parser.parse_args(args) if args else parser.parse_args()
     args = regularize_args(args)
 
-    if not args.guided_inference:
-        raise RuntimeError("Inference is only in guided mode for now!")
-
     logger.init_logger(args.log_file)
 
     if len(args.gpus) == 1:

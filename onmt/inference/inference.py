@@ -156,7 +156,7 @@ class BaseInference:
             if current_sentences is None:
                 assert memory_bank is None
                 assert src_lengths is None
-                if sent_idx != n_sentences - 1:
+                if sent_idx != n_sentences - 1 and self.is_guided_inference:
                     self.logger.warn('Stopping generation earlier than '
                                      f'expected, for batch={warn_indices}')
                 break
@@ -496,7 +496,7 @@ class Inference(BaseInference):
         # when its elaboration is 2 (<eod>) or 1 (<pad>).
         valid_examples = elaborations.ge(3).nonzero().squeeze(1)
         if (batch_size := valid_examples.size(0)) == 0:
-            return None, None, None
+            return None, None, None, None
 
         # Keep track of current sentences
         current_sentences = [current_sentences[idx] for idx in valid_examples]
@@ -626,7 +626,7 @@ class GuidedInference(BaseInference):
         # when its elaboration is 2 (<eod>) or 1 (<pad>).
         valid_examples = batch.elaborations[sent_idx].ge(3).nonzero().squeeze(1)
         if not len(valid_examples):
-            return None, None, None
+            return None, None, None, None
 
         # Keep track of current sentences
         current_sentences = [current_sentences[idx] for idx in valid_examples]
