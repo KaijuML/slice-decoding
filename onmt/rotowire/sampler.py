@@ -154,6 +154,7 @@ class Batch:
         'indices': 0,
         'src_ex_vocab': None,
         'elaborations_query_mapping': None,
+        'elaboration_view_idxs': None,
     }
 
     def __init__(self, fields):
@@ -165,6 +166,8 @@ class Batch:
         self.src = fields.pop('src')
 
         self.indices = fields.pop('indices')
+
+        self.elaboration_view_idxs = fields.pop('elaboration_view_idxs')
 
         if 'contexts' in fields:
             self.elaborations = fields.pop('elaborations')
@@ -227,7 +230,7 @@ class Batch:
                         s += f'  [{name} {i}] ({_cls}): {list(obj.shape)}\n'
                 else:
                     _cls = type(item).__name__
-                    s += f'  {name} ({_cls}): [{len(item)}]'
+                    s += f'  {name} ({_cls}): [{len(item)}]\n'
             elif isinstance(item, torch.Tensor):
                 _cls = item.dtype
                 s += f'  [{name}] ({_cls}): {list(item.shape)}\n'
@@ -360,7 +363,9 @@ def collate_fn(examples):
             batch['alignments'] = nested_pad(alignments, include_idxs=False)
 
     # We are in Inference mode
-    elif batch.get('elaborations_query_mapping', None) is None:
-        raise RuntimeError('elaborations_query_mapping is needed for Inference')
+    else:
+        for key in {'elaboration_view_idxs', 'elaborations_query_mapping'}:
+            if batch.get(key, None) is None:
+                raise RuntimeError(f'{key} is needed for Inference')
 
     return Batch(batch)

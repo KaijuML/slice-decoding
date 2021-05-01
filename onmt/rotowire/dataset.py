@@ -191,6 +191,7 @@ class RotowireDataset(Dataset):
         example['n_primaries'] = torch.LongTensor([raw_example['n_primaries']])
         example['src_ex_vocab'] = raw_example['source_vocab']
         example['indices'] = torch.LongTensor([item])
+        example['elaboration_view_idxs'] = raw_example['elaboration_view_idxs']
 
         return example
 

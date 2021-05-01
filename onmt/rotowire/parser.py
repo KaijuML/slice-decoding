@@ -238,6 +238,7 @@ class RotowireTrainingParser(RotowireParser):
 
         # The encoder final representation is based on primary entities only
         example['n_primaries'] = len(inputs)
+        example['elaboration_view_idxs'] = elaboration_view_idxs
 
         # We also build a src_map. This mapping assigns to each source token
         # its position in the source_vocab. This is used by the copy mechanism
@@ -390,11 +391,12 @@ class RotowireInferenceParser(RotowireTrainingParser):
         # to include grounding views in case of GuidedInference OR include all
         # views in case of Inference.
 
+        # We need to remember the index of each elaboration in the source sequence.
+        # For non-guided inference, it's pretty easy since there's no elabs.
+        elaboration_view_idxs = dict()
         if self.guided_inference:
             # For GuidedInference, we also need the grounding views for each
             # of the summary's sentences.
-            # We also remember for each one its index in the input_sequence.
-            elaboration_view_idxs = dict()
             for view_idx, elaboration in entity_elaborations:
                 elaboration_key = self.reverse_elaboration_mapping[elaboration]
                 view_data = inputs[view_idx]["data"][elaboration_key]
@@ -432,6 +434,7 @@ class RotowireInferenceParser(RotowireTrainingParser):
 
         # The encoder final representation is based on primary entities only
         example['n_primaries'] = len(inputs)
+        example['elaboration_view_idxs'] = elaboration_view_idxs
 
         # We also build a src_map. This mapping assigns to each source token
         # its position in the source_vocab. This is used by the copy mechanism
