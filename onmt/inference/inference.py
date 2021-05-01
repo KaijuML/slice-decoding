@@ -149,7 +149,7 @@ class BaseInference:
         # Generate sentences one by one using beam search
         for sent_idx in range(n_sentences):
 
-            current_sentences, memory_bank, src_lengths = self.prep_sentence_generation(
+            current_sentences, true_memory_bank, memory_bank, src_lengths = self.prep_sentence_generation(
                 batch, sent_idx, current_sentences,
                 prev_states, true_lengths, true_memory_bank)
 
@@ -407,7 +407,7 @@ class Inference(BaseInference):
         self.is_guided_inference = False
 
     def count_nb_planned_sentences(self, batch):
-        return 20
+        return 25
 
     def add_elaboration_to_batch(self, batch, batch_idx, ent, elab_str,
                                  elaborations_query_mapping,
@@ -495,7 +495,7 @@ class Inference(BaseInference):
         # Create list of examples that are not done. We know an example is done
         # when its elaboration is 2 (<eod>) or 1 (<pad>).
         valid_examples = elaborations.ge(3).nonzero().squeeze(1)
-        if (batch_size := valid_examples.size()) == 0:
+        if (batch_size := valid_examples.size(0)) == 0:
             return None, None, None
 
         # Keep track of current sentences
@@ -504,6 +504,8 @@ class Inference(BaseInference):
         # Filter batch examples
         batch.index_select(valid_examples)
         elaborations = elaborations.index_select(dim=0, index=valid_examples)
+
+        assert batch.batch_size == batch_size
 
         # Also filter the true_memory_bank and true_src_lengths
         true_lengths = true_lengths.index_select(dim=0, index=valid_examples)
@@ -515,6 +517,9 @@ class Inference(BaseInference):
         # filter decoder's states to keep only valid examples
         fn = lambda state, dim: state.index_select(dim, valid_examples)
         self.model.decoder.map_state(fn)
+
+        # re-fetch decoder states, now that they are filtered
+        dec_states = self.model.decoder.state['input_feed'].squeeze(0)
 
         # Also computing grounding entities and elaborations to memory_bank
         with torch.no_grad():
@@ -535,9 +540,9 @@ class Inference(BaseInference):
 
         # Concat the chosen entities into same array, and add padding for elaborations
         contexts = torch.stack([first_entity, second_entity], dim=1)
-        contexts = torch.cat([contexts, torch.zeros(batch_size, 2, device=contexts.device)], dim=1)
+        contexts = torch.cat([contexts, torch.zeros(batch_size, 2, device=self.device)], dim=1)
 
-        reverse_elaboration_mapping = [dict() for _ in range(batch_size)]
+        rerun_encoding = False
         for batch_idx in range(batch_size):
 
             elab = elaborations[batch_idx].item()
@@ -552,53 +557,57 @@ class Inference(BaseInference):
                 for eidx, ent in enumerate(contexts[batch_idx, :2], 2):
                     if ent > 0:
 
-                        if (ent, '<event>') not in reverse_elaboration_mapping[batch_idx]:
+                        if (ent, '<event>') not in batch.elaboration_view_idxs[batch_idx]:
+                            rerun_encoding = True
                             self.add_elaboration_to_batch(
                                 batch, batch_idx, ent, '<event>',
                                 batch.elaborations_query_mapping[batch_idx],
-                                reverse_elaboration_mapping[batch_idx]
+                                batch.elaboration_view_idxs[batch_idx]
                             )
 
-                        _idx = reverse_elaboration_mapping[batch_idx][ent, '<event>']
+                        _idx = batch.elaboration_view_idxs[batch_idx][ent, '<event>']
                         contexts[batch_idx][eidx] = _idx
 
             elif elab == self.vocabs['elab_vocab']['<time>']:
                 for eidx, ent in enumerate(contexts[batch_idx, :2], 2):
                     if ent > 0:
 
-                        if (ent, '<time>') not in reverse_elaboration_mapping[batch_idx]:
+                        if (ent, '<time>') not in batch.elaboration_view_idxs[batch_idx]:
+                            rerun_encoding = True
                             self.add_elaboration_to_batch(
                                 batch, batch_idx, ent, '<time>',
                                 batch.elaborations_query_mapping[batch_idx],
-                                reverse_elaboration_mapping[batch_idx]
+                                batch.elaboration_view_idxs[batch_idx]
                             )
 
-                        _idx = reverse_elaboration_mapping[batch_idx][ent, '<time>']
+                        _idx = batch.elaboration_view_idxs[batch_idx][ent, '<time>']
                         contexts[batch_idx][eidx] = _idx
 
             else:
                 raise RuntimeError(f'Unexpected elaboration: {elab}')
 
-        # Not the most efficient thing, but the easiest by fat:
+        # Not the most efficient thing, but the easiest by far:
         # we recompute the whole encoding of the source, with the added entities
-        with torch.no_grad():
-            memory_bank = self.model.encoder(*batch.src, batch.n_primaries)
-
-        # Now, we need to replace all keys of true_memory_bank,
+        # We also need to replace all keys of true_memory_bank,
         # without creating a new object (and lengths)
-        true_lengths[:] = batch.src[1]
-        for key, value in memory_bank.items():
-            true_memory_bank[key] = value
+
+        if rerun_encoding:
+            with torch.no_grad():
+                memory_bank = self.model.encoder(*batch.src, batch.n_primaries)
+
+            true_lengths[:] = batch.src[1]
+            for key, value in memory_bank.items():
+                true_memory_bank[key] = value
 
         # Clone the memory bank to avoid messing anything up during beam search
         # (e.g. ordering, done beams, etc.)
         src_lengths = true_lengths.clone()
         memory_bank = {name: tensor.clone() for name, tensor in true_memory_bank.items()}
 
-        memory_bank['contexts'] = contexts.unsqueeze(0)
+        memory_bank['contexts'] = contexts.unsqueeze(0).long()
         memory_bank['elaborations'] = elaborations.unsqueeze(0)
 
-        return current_sentences, memory_bank, src_lengths
+        return current_sentences, true_memory_bank, memory_bank, src_lengths
 
 
 class GuidedInference(BaseInference):
@@ -650,4 +659,4 @@ class GuidedInference(BaseInference):
         memory_bank['contexts'] = batch.contexts[sent_idx:sent_idx + 1].transpose(1, 2).contiguous()
         memory_bank['elaborations'] = batch.elaborations[sent_idx:sent_idx + 1]
 
-        return current_sentences, memory_bank, src_lengths
+        return current_sentences, true_memory_bank, memory_bank, src_lengths
