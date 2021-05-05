@@ -1,8 +1,8 @@
 from onmt.modules.copy_generator import collapse_copy_scores
 from onmt.inference import BeamSearch, GNMTGlobalScorer
+from onmt.utils.misc import Container, sequence_mask
 from onmt.rotowire.dataset import numericalize
 from onmt.model_builder import load_test_model
-from onmt.utils.misc import Container
 
 from onmt.rotowire import (
     RotowireGuidedInferenceDataset,
@@ -15,15 +15,14 @@ import tqdm
 import os
 
 
-def build_inference(opts, logger=None):
-    device = torch.device(f'cuda:{opts.gpu}') if opts.gpu >= 0 else None
-    vocabs, model, model_opts = load_test_model(opts.model_path, device)
+def build_inference(args, logger=None):
+    vocabs, model, model_opts = load_test_model(args.model_path, args.gpu)
 
-    inference_cls = GuidedInference if opts.guided_inference else Inference
+    inference_cls = GuidedInference if args.guided_inference else Inference
     return inference_cls.from_opts(
         model,
         vocabs,
-        opts,
+        args,
         logger=logger
     )
 
@@ -34,7 +33,6 @@ class BaseInference:
                  vocabs,
 
                  seed,
-                 gpu,
 
                  beam_size,
                  min_sent_length,
@@ -50,7 +48,6 @@ class BaseInference:
         self.vocabs = vocabs
 
         self.seed = seed
-        self.gpu = gpu
 
         self.beam_size = beam_size
         self.min_sent_length = min_sent_length
@@ -69,6 +66,10 @@ class BaseInference:
     def device(self):
         return self.model.device
 
+    @property
+    def entity_size(self):
+        return self.model.config.entity_size
+
     @classmethod
     def from_opts(cls, model, vocabs, opts, logger):
         return cls(
@@ -76,7 +77,6 @@ class BaseInference:
             vocabs=vocabs,
 
             seed=opts.seed,
-            gpu=opts.gpu,
 
             beam_size=opts.beam_size,
             min_sent_length=opts.min_sent_length,
@@ -149,9 +149,13 @@ class BaseInference:
         # Generate sentences one by one using beam search
         for sent_idx in range(n_sentences):
 
-            current_sentences, true_memory_bank, memory_bank, src_lengths = self.prep_sentence_generation(
+            packed_preped_sentence_gen = self.prep_sentence_generation(
                 batch, sent_idx, current_sentences,
                 prev_states, true_lengths, true_memory_bank)
+
+            current_sentences = packed_preped_sentence_gen[0]
+            true_memory_bank, true_lengths = packed_preped_sentence_gen[1:3]
+            memory_bank, src_lengths = packed_preped_sentence_gen[3:5]
 
             if current_sentences is None:
                 assert memory_bank is None
@@ -414,15 +418,15 @@ class Inference(BaseInference):
                                  reverse_elaboration_mapping):
 
         main_voc, cols_voc = self.vocabs['main_vocab'], self.vocabs['cols_vocab']
-        entity_size = self.model.config.entity_size
 
         # Unpack original source
         src, src_lengths = batch.src
 
+        assert ent.item() - 1 in elaborations_query_mapping, batch_idx
         vals = elaborations_query_mapping[ent.item() - 1][elab_str][0]
         cols = elaborations_query_mapping[ent.item() - 1][elab_str][1]
 
-        assert len(vals) == len(cols) == entity_size
+        assert len(vals) == len(cols) == self.entity_size
 
         # Adding litteral values to src_ex_vocab
         vocab = batch.src_ex_vocab[batch_idx]
@@ -441,8 +445,11 @@ class Inference(BaseInference):
             batch.src_map = torch.cat([batch.src_map, padding], dim=2)
 
         if (pad := src_lengths[batch_idx].item() + len(vals) - src_lengths.max()) > 0:
-            dims = list(batch.src[0].shape); dims[0] = pad
-            padding = torch.zeros(*dims, **kwargs)
+            dims = [pad, batch.src[0].size(1), 1]
+            padding = torch.cat([
+                torch.full(size=dims, fill_value=self.vocabs['main_vocab']['<pad>'], **kwargs),
+                torch.full(size=dims, fill_value=self.vocabs['cols_vocab']['<pad>'], **kwargs),
+            ], dim=2)
             src = torch.cat([src, padding], dim=0)
 
             dims = list(batch.src_map.shape); dims[0] = pad
@@ -468,7 +475,7 @@ class Inference(BaseInference):
         batch.src = src, src_lengths
 
         # Add this elaboration to the reverse mapping
-        ridx = (src_lengths[batch_idx] // entity_size) - 1
+        ridx = (src_lengths[batch_idx] // self.entity_size) - 1
         reverse_elaboration_mapping[ent, elab_str] = ridx
 
     def prep_sentence_generation(self, batch, sent_idx, current_sentences,
@@ -496,13 +503,15 @@ class Inference(BaseInference):
         # when its elaboration is 2 (<eod>) or 1 (<pad>).
         valid_examples = elaborations.ge(3).nonzero().squeeze(1)
         if (batch_size := valid_examples.size(0)) == 0:
-            return None, None, None, None
+            return [None] * 5
 
         # Keep track of current sentences
         current_sentences = [current_sentences[idx] for idx in valid_examples]
 
         # Filter batch examples
         batch.index_select(valid_examples)
+
+        # Filter elaborations
         elaborations = elaborations.index_select(dim=0, index=valid_examples)
 
         assert batch.batch_size == batch_size
@@ -511,6 +520,37 @@ class Inference(BaseInference):
         true_lengths = true_lengths.index_select(dim=0, index=valid_examples)
         true_memory_bank = {name: tensor.index_select(dim=1, index=valid_examples)
                             for name, tensor in true_memory_bank.items()}
+
+        # We trim objects to remove extra padding. This is not really useful
+        # to optimize compute, but since I have assertion errors everywhere
+        # down the line that check for optimal size, it's the only way to re-run
+        # the encoding process
+
+        src, src_lengths = batch.src
+        if (pad := src.size(0) - src_lengths.max().item()) > 0:
+
+            # We check that we do not remove any thing else than padding in src
+            assert src[-pad:, :, 0].eq(self.vocabs['main_vocab']['<pad>']).all()
+            assert src[-pad:, :, 1].eq(self.vocabs['cols_vocab']['<pad>']).all()
+
+            batch.src = src[:-pad], src_lengths
+
+            # same check in src_map
+            assert batch.src_map[-pad:].eq(0).all()
+            _pad = max(len(voc) for voc in batch.src_ex_vocab)
+            assert batch.src_map[:, :, _pad:].eq(0).all()
+
+            batch.src_map = batch.src_map[:-pad, :, :_pad]
+
+            # Also trim true_memory_bank, which contains embedded padding
+            name2trim = {
+                'high_level_repr': 1 + (true_lengths.max() // self.entity_size),
+                'low_level_repr': true_lengths.max(),
+                'low_level_mask': true_lengths.max() // self.entity_size,
+                'pos_embs': true_lengths.max(),
+            }
+            for name, trim in name2trim.items():
+                true_memory_bank[name] = true_memory_bank[name][:trim]
 
         # Now we can start the process of generating one sentence using beam search
 
@@ -535,6 +575,11 @@ class Inference(BaseInference):
         first_scr = torch.bmm(first_query.unsqueeze(1), candidates)
         second_scr = torch.bmm(second_query.unsqueeze(1), candidates)
 
+        # Set proba of selecting a  padding views to zero
+        padding_views_mask = ~sequence_mask(batch.n_primaries, first_scr.size(2))
+        first_scr = first_scr.masked_fill(padding_views_mask.unsqueeze(1), float('-inf'))
+        second_scr = second_scr.masked_fill(padding_views_mask.unsqueeze(1), float('-inf'))
+
         first_entity = first_scr.topk(1, dim=2).indices.view(batch_size)
         second_entity = second_scr.topk(1, dim=2).indices.view(batch_size)
 
@@ -544,7 +589,6 @@ class Inference(BaseInference):
 
         rerun_encoding = False
         for batch_idx in range(batch_size):
-
             elab = elaborations[batch_idx].item()
 
             if elab == self.vocabs['elab_vocab']['<primary>']:
@@ -555,6 +599,7 @@ class Inference(BaseInference):
 
             elif elab == self.vocabs['elab_vocab']['<event>']:
                 for eidx, ent in enumerate(contexts[batch_idx, :2], 2):
+
                     if ent > 0:
 
                         if (ent, '<event>') not in batch.elaboration_view_idxs[batch_idx]:
@@ -593,11 +638,9 @@ class Inference(BaseInference):
 
         if rerun_encoding:
             with torch.no_grad():
-                memory_bank = self.model.encoder(*batch.src, batch.n_primaries)
+                true_memory_bank = self.model.encoder(*batch.src, batch.n_primaries)
 
-            true_lengths[:] = batch.src[1]
-            for key, value in memory_bank.items():
-                true_memory_bank[key] = value
+        true_lengths[:] = batch.src[1]
 
         # Clone the memory bank to avoid messing anything up during beam search
         # (e.g. ordering, done beams, etc.)
@@ -607,7 +650,7 @@ class Inference(BaseInference):
         memory_bank['contexts'] = contexts.unsqueeze(0).long()
         memory_bank['elaborations'] = elaborations.unsqueeze(0)
 
-        return current_sentences, true_memory_bank, memory_bank, src_lengths
+        return current_sentences, true_memory_bank, true_lengths, memory_bank, src_lengths
 
 
 class GuidedInference(BaseInference):
@@ -659,4 +702,4 @@ class GuidedInference(BaseInference):
         memory_bank['contexts'] = batch.contexts[sent_idx:sent_idx + 1].transpose(1, 2).contiguous()
         memory_bank['elaborations'] = batch.elaborations[sent_idx:sent_idx + 1]
 
-        return current_sentences, true_memory_bank, memory_bank, src_lengths
+        return current_sentences, true_memory_bank, true_lengths, memory_bank, src_lengths
