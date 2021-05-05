@@ -20,6 +20,7 @@ def build_dataset_iter(dataset, opt, device_id=-1, debug_batches=None):
     :param dataset: a rotowire.RotowireDataset object
     :param opt: the training / inference options
     :param device_id: the id of the device (-1 for cpu)
+    :param debug_batches: if specified, only iter those batches
     """
     if not isinstance(dataset, RotowireDataset):
         raise TypeError(f'Unexpected dataset type: {type(dataset)}')
@@ -45,9 +46,9 @@ class IterOnDevice:
     Adapted from onmt to work with our custom RotoWire.
     """
 
-    def __init__(self, iterable, device_id):
+    def __init__(self, iterable, device_or_device_id):
         self.iterable = iterable
-        self.device = format_device(device_id)
+        self.device = format_device(device_or_device_id)
 
         self.do_context, self.do_target = False, False
         if isinstance(iterable.dataset, RotowireTrainingDataset):
