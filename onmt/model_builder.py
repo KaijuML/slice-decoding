@@ -16,6 +16,7 @@ from onmt.decoders import HierarchicalRNNDecoder
 
 from onmt.modules import TableEmbeddings, CopyGenerator, ContextPredictor
 from onmt.utils.parse import ArgumentParser
+from onmt.utils.misc import format_device
 from onmt.utils.logging import logger
 
 
@@ -53,7 +54,7 @@ def build_embeddings(opt, main_vocab, cols_vocab):
 
 
 def load_test_model(model_path, device=None):
-    device = device if device is not None else torch.device('cpu')
+    device = format_device(device)
 
     checkpoint = torch.load(model_path,
                             map_location=lambda storage, loc: storage)
