@@ -40,6 +40,8 @@ def format_device(device_or_device_id):
     if isinstance(device_or_device_id, int):
         device_id = device_or_device_id
         return torch.device(device_id if device_id >= 0 else 'cpu')
+    if device_or_device_id is None:
+        return torch.device('cpu')
     raise RuntimeError(f'Unknown device: {device_or_device_id}')
 
 
