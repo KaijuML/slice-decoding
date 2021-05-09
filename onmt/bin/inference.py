@@ -1,10 +1,11 @@
 from onmt.utils.misc import set_random_seed, Container, grouped
 from onmt.inference import build_inference
 from onmt.utils.logging import logger
-from multiprocessing import Process
+import multiprocessing as mp
 
 import configargparse as argparse
 import torch
+import math
 import os
 
 
@@ -134,7 +135,7 @@ def get_parser():
     return parser
 
 
-def single(args):
+def single_main(args):
     configure_process(args.seed, args.gpu)
     inference = build_inference(args, logger)
     inference.run(args.source_file, args.batch_size, if_file_exists='overwrite')
@@ -151,24 +152,27 @@ def main(args=None):
         logger.info(f'Running inference script on {args.gpu=}')
 
         for step in args.checkpoints:
-            single(build_container(args, step, args.gpus[0]))
+            single_main(build_container(args, step, args.gpus[0]))
 
     else:
         logger.info(f'Doing {len(args.gpus)} inference runs in parallel, on '
                     f'gpus {", ".join(str(gpu) for gpu in args.gpus)}.')
 
-        for steps in grouped(args.checkpoints, len(args.gpus)):
+        gpus = args.gpus * math.ceil(len(args.checkpoints) / len(args.gpus))
+        containers = [
+            build_container(args, ckpt, gpu)
+            for ckpt, gpu in zip(args.checkpoints, gpus)
+            if ckpt is not None
+        ]
 
-            containers = [
-                build_container(args, step, gpu)
-                for step, gpu in zip(steps, args.gpus)
-                if step is not None
-            ]
+        with mp.Pool(processes=len(args.gpus)) as pool:
+            _iterable = pool.imap(
+                single_main,
+                containers,
+            )
 
-            processes = [Process(target=single, args=(container,))
-                         for container in containers]
-            [p.start() for p in processes]
-            [p.join() for p in processes]
+            for _ in _iterable:
+                pass
 
 
 if __name__ == '__main__':
