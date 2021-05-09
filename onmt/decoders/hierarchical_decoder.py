@@ -348,7 +348,7 @@ class HierarchicalRNNDecoder(torch.nn.Module):
 
     def _run_forward_pass(self, tgt, ctx, idx, memory_bank):
         """
-        TODO: update decumention of this function!
+        TODO: update documentation of this function!
         """
         # Additional args check.
         input_feed_batch = self.state["input_feed"].size(1)

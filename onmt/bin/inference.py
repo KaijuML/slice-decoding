@@ -52,7 +52,10 @@ def build_container(args, step, gpu):
 
     dest = guess_if_validation_or_test(args.source_file)
     dest = os.path.join('experiments', args.experiment, 'gens', dest)
-    dest = os.path.join(dest, f'{".".join(f"{k}={v}" for k, v in hparams)}.txt')
+    dest = os.path.join(dest, f'{".".join(f"{k}={v}" for k, v in hparams)}')
+
+    desc_dest = dest + '.desc'
+    plan_dest = dest + '.plan'
 
     model_path = os.path.join('experiments',
                               args.experiment,
@@ -64,7 +67,8 @@ def build_container(args, step, gpu):
 
         source_file=args.source_file,
         model_path=model_path,
-        dest=dest,
+        desc_dest=desc_dest,
+        plan_dest=plan_dest,
 
         batch_size=args.batch_size,
         beam_size=args.beam_size,

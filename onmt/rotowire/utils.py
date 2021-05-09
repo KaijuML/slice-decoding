@@ -5,6 +5,46 @@ import json
 import os
 
 
+class MultiOpen:
+    """
+    Can open multiple files at once, without write nested `with Open`
+    ARGS:
+        *filenames: list of filename to open
+        mode OR modes: either unique mode for all files, or a mode per file
+        encoding OR encodings: either unique encoding for all files, or an encoding per file
+
+    Usage:
+    >>> with MultiOpen(file1, file2, mode='r', encoding='utf8') as f, g:
+    >>>     flines = f.readlines()
+    >>>     glines = g.readlines()
+    """
+
+    def __init__(self, *filenames, mode='r', modes=None, encoding='utf8', encodings=None):
+        self.filenames = filenames
+        self.files = [None] * len(filenames)
+
+        if modes is None:
+            modes = [mode] * len(self.filenames)
+        self.modes = modes
+
+        if encodings is None:
+            encodings = [encoding] * len(self.filenames)
+        self.encodings = encodings
+
+    def __enter__(self):
+
+        zipped_args = zip(self.filenames, self.modes, self.encodings)
+        self.files = [
+            open(file, mode, encoding=encoding)
+            for file, mode, encoding in zipped_args
+        ]
+
+        return self.files
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        [file.close() for file in self.files]
+
+
 class FileIterable:
     """
     File utility. This avoids reading all file in memory when reading the file

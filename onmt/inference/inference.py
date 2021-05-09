@@ -3,6 +3,7 @@ from onmt.inference import BeamSearch, GNMTGlobalScorer
 from onmt.utils.misc import Container, sequence_mask
 from onmt.rotowire.dataset import numericalize
 from onmt.model_builder import load_test_model
+from onmt.rotowire.utils import MultiOpen
 
 from onmt.rotowire import (
     RotowireGuidedInferenceDataset,
@@ -13,6 +14,9 @@ from onmt.rotowire import (
 import torch
 import tqdm
 import os
+
+
+PREP_SENTENCE_GENERATION_N_OUPTUS = 6
 
 
 def build_inference(args, logger=None):
@@ -41,7 +45,8 @@ class BaseInference:
                  block_ngram_repeat,
                  ignore_when_blocking,
 
-                 dest,
+                 desc_dest,
+                 plan_dest,
                  logger):
 
         self.model = model
@@ -56,7 +61,8 @@ class BaseInference:
         self.block_ngram_repeat = block_ngram_repeat
         self.ignore_when_blocking = ignore_when_blocking
 
-        self.dest = dest
+        self.desc_dest = desc_dest
+        self.plan_dest = plan_dest
         self.logger = logger
 
         # This should be specified by children of this base class
@@ -85,7 +91,8 @@ class BaseInference:
             block_ngram_repeat=opts.block_ngram_repeat,
             ignore_when_blocking=set(opts.ignore_when_blocking),
 
-            dest=opts.dest,
+            desc_dest=opts.desc_dest,
+            plan_dest=opts.plan_dest,
             logger=logger,
         )
 
@@ -115,14 +122,21 @@ class BaseInference:
         opt = Container(batch_size=batch_size, num_threads=1)
         inference_iter = build_dataset_iter(dataset, opt, self.device)
 
-        for batch in tqdm.tqdm(inference_iter, desc="Running inference"):
-            batch_predicted_sentences = self.run_on_batch(batch)
+        for batch in tqdm.tqdm(inference_iter, desc="Running Inference"):
+            batch_predicted_descriptions = self.run_on_batch(batch)
 
-            with open(self.dest, mode="a", encoding="utf8") as f:
-                for predicted_sentences in batch_predicted_sentences:
-                    pred = ' '.join(sent.strip('<s> ')
-                                    for sent in predicted_sentences)
-                    f.write(f"{pred.replace('_', ' ')}\n")
+            kwargs = {"mode": "a", "encoding": "utf8"}
+            with MultiOpen(self.desc_dest, self.plan_dest, **kwargs) as files:
+                desc_file, plan_file = files
+                for desc, plan in zip(*batch_predicted_descriptions):
+                    assert len(desc) == len(plan)
+
+                    for sentence, (entities, elab) in zip(desc, plan):
+                        desc_file.write(sentence.strip('<s> ').replace('_', ' ') + '\n')
+                        plan_file.write(f'{entities} {elab}\n')
+
+                    desc_file.write('\n')
+                    plan_file.write('\n')
 
     def run_on_batch(self, batch):
 
@@ -134,9 +148,10 @@ class BaseInference:
 
         # prepare final outputs
         all_sentences = [list() for _ in range(batch.batch_size)]
+        all_plans = [list() for _ in range(batch.batch_size)]
 
         # tracking predictions that are still not done
-        current_sentences = all_sentences
+        current_sentences, current_plans = all_sentences, all_plans
 
         with torch.no_grad():
             # 1. Run the encoder on the src.
@@ -150,12 +165,12 @@ class BaseInference:
         for sent_idx in range(n_sentences):
 
             packed_preped_sentence_gen = self.prep_sentence_generation(
-                batch, sent_idx, current_sentences,
+                batch, sent_idx, current_sentences, current_plans,
                 prev_states, true_lengths, true_memory_bank)
 
-            current_sentences = packed_preped_sentence_gen[0]
-            true_memory_bank, true_lengths = packed_preped_sentence_gen[1:3]
-            memory_bank, src_lengths = packed_preped_sentence_gen[3:5]
+            current_sentences, current_plans = packed_preped_sentence_gen[:2]
+            true_memory_bank, true_lengths = packed_preped_sentence_gen[2:4]
+            memory_bank, src_lengths = packed_preped_sentence_gen[4:6]
 
             if current_sentences is None:
                 assert memory_bank is None
@@ -164,6 +179,14 @@ class BaseInference:
                     self.logger.warn('Stopping generation earlier than '
                                      f'expected, for batch={warn_indices}')
                 break
+
+            # Keep track of (maybe) predicted entities and elaborations
+            predicted_ctx = memory_bank['contexts'][0, :, :2].tolist()
+            predicted_elab = memory_bank['elaborations'][0].tolist()
+
+            assert len(predicted_elab) == len(predicted_ctx) == len(current_plans)
+            for pidx in range(len(current_plans)):
+                current_plans[pidx].append([predicted_ctx[pidx], predicted_elab[pidx]])
 
             # We will decode each sentence using beam search
             scorer_opt = Container(
@@ -198,12 +221,13 @@ class BaseInference:
 
             prev_states = self.reset_states(decode_strategy)
 
-        return all_sentences
+        return all_sentences, all_plans
 
     def count_nb_planned_sentences(self, batch):
         raise NotImplementedError()
 
-    def prep_sentence_generation(self, batch, sent_idx, current_sentences,
+    def prep_sentence_generation(self, batch, sent_idx,
+                                 current_sentences, current_plans,
                                  prev_states, true_lengths, true_memory_bank):
         raise NotImplementedError()
 
@@ -478,7 +502,8 @@ class Inference(BaseInference):
         ridx = (src_lengths[batch_idx] // self.entity_size) - 1
         reverse_elaboration_mapping[ent, elab_str] = ridx
 
-    def prep_sentence_generation(self, batch, sent_idx, current_sentences,
+    def prep_sentence_generation(self, batch, sent_idx,
+                                 current_sentences, current_plans,
                                  prev_states, true_lengths, true_memory_bank):
         """
         Here, we need to predict the grounding entities, as well as the
@@ -503,10 +528,11 @@ class Inference(BaseInference):
         # when its elaboration is 2 (<eod>) or 1 (<pad>).
         valid_examples = elaborations.ge(3).nonzero().squeeze(1)
         if (batch_size := valid_examples.size(0)) == 0:
-            return [None] * 5
+            return [None] * PREP_SENTENCE_GENERATION_N_OUPTUS
 
-        # Keep track of current sentences
+        # Keep track of current sentences & plans
         current_sentences = [current_sentences[idx] for idx in valid_examples]
+        current_plans = [current_plans[idx] for idx in valid_examples]
 
         # Filter batch examples
         batch.index_select(valid_examples)
@@ -575,7 +601,7 @@ class Inference(BaseInference):
         first_scr = torch.bmm(first_query.unsqueeze(1), candidates)
         second_scr = torch.bmm(second_query.unsqueeze(1), candidates)
 
-        # Set proba of selecting a  padding views to zero
+        # Set proba of selecting a padding views to zero
         padding_views_mask = ~sequence_mask(batch.n_primaries, first_scr.size(2))
         first_scr = first_scr.masked_fill(padding_views_mask.unsqueeze(1), float('-inf'))
         second_scr = second_scr.masked_fill(padding_views_mask.unsqueeze(1), float('-inf'))
@@ -647,10 +673,17 @@ class Inference(BaseInference):
         src_lengths = true_lengths.clone()
         memory_bank = {name: tensor.clone() for name, tensor in true_memory_bank.items()}
 
-        memory_bank['contexts'] = contexts.unsqueeze(0).long()
+        memory_bank['contexts'] = contexts.unsqueeze(0).long() - 1  # Padding
         memory_bank['elaborations'] = elaborations.unsqueeze(0)
 
-        return current_sentences, true_memory_bank, true_lengths, memory_bank, src_lengths
+        return (
+            current_sentences,
+            current_plans,
+            true_memory_bank,
+            true_lengths,
+            memory_bank,
+            src_lengths
+        )
 
 
 class GuidedInference(BaseInference):
@@ -662,17 +695,19 @@ class GuidedInference(BaseInference):
     def count_nb_planned_sentences(self, batch):
         return batch.elaborations.size(0)
 
-    def prep_sentence_generation(self, batch, sent_idx, current_sentences,
+    def prep_sentence_generation(self, batch, sent_idx,
+                                 current_sentences, current_plans,
                                  prev_states, true_lengths, true_memory_bank):
 
         # Create list of examples that are not done. We know an example is done
         # when its elaboration is 2 (<eod>) or 1 (<pad>).
         valid_examples = batch.elaborations[sent_idx].ge(3).nonzero().squeeze(1)
         if not len(valid_examples):
-            return None, None, None, None
+            return [None] * PREP_SENTENCE_GENERATION_N_OUPTUS
 
-        # Keep track of current sentences
+        # Keep track of current sentences & plans
         current_sentences = [current_sentences[idx] for idx in valid_examples]
+        current_plans = [current_plans[idx] for idx in valid_examples]
 
         # Filter batch examples
         batch.index_select(valid_examples)
@@ -702,4 +737,11 @@ class GuidedInference(BaseInference):
         memory_bank['contexts'] = batch.contexts[sent_idx:sent_idx + 1].transpose(1, 2).contiguous()
         memory_bank['elaborations'] = batch.elaborations[sent_idx:sent_idx + 1]
 
-        return current_sentences, true_memory_bank, true_lengths, memory_bank, src_lengths
+        return (
+            current_sentences,
+            current_plans,
+            true_memory_bank,
+            true_lengths,
+            memory_bank,
+            src_lengths
+        )
