@@ -169,6 +169,7 @@ class Batch:
         self.indices = fields.pop('indices')
 
         self.elaboration_view_idxs = fields.pop('elaboration_view_idxs')
+        self.elaborations_query_mapping = fields.pop('elaborations_query_mapping', None)
 
         if 'contexts' in fields:
             self.elaborations = fields.pop('elaborations')
@@ -177,8 +178,6 @@ class Batch:
             if 'sentences' in fields:
                 self.alignments = fields.pop('alignments')
                 self.sentences = fields.pop('sentences')
-        else:
-            self.elaborations_query_mapping = fields.pop('elaborations_query_mapping')
 
         assert len(fields) == 0, list(fields)
 
@@ -364,9 +363,9 @@ def collate_fn(examples):
             batch['alignments'] = nested_pad(alignments, include_idxs=False)
 
     # We are in Inference mode
-    else:
-        for key in {'elaboration_view_idxs', 'elaborations_query_mapping'}:
-            if batch.get(key, None) is None:
-                raise RuntimeError(f'{key} is needed for Inference')
+    # else:
+    #     for key in {'elaboration_view_idxs', 'elaborations_query_mapping'}:
+    #         if batch.get(key, None) is None:
+    #             raise RuntimeError(f'{key} is needed for Inference')
 
     return Batch(batch)

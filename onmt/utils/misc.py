@@ -19,9 +19,9 @@ class Container:
 
     def __getattr__(self, item):
         """Only called when item is not known to the container"""
-        raise RuntimeError(f'{item} is not a known attribute of this Container.'
-                           f'This code uses Containers at places where I need '
-                           f'an objects that behaves like another object (e.g. '
+        raise RuntimeError(f'<{item}> is not a known attribute of this Container.'
+                           f' This code uses Containers at places where I need '
+                           f'an object that behaves like another object (e.g. '
                            f'a batch, a namespace, etc.). Find where this '
                            f'container is used in the code and fix this issue!')
 

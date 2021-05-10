@@ -411,20 +411,21 @@ class RotowireInferenceParser(RotowireTrainingParser):
                 # Tracking where each elaboration is stored in the input sequence.
                 # Very helpful when building contexts for decoding target sentences
                 elaboration_view_idxs[view_idx, elaboration] = len(input_sequence[0]) - 1
-        else:
-            # For normal Inference, we want to parse all views, and build an
-            # efficient mapping that can be queried at each new sentence, for
-            # new grounding views.
-            elaborations_query_mapping = dict()
-            for idx, view_dict in enumerate(inputs):
-                elaborations_query_mapping[idx] = dict()
-                for key in ['<time>', '<event>']:
-                    elaborations_key = self.reverse_elaboration_mapping[key]
-                    view_data = view_dict["data"][elaborations_key]
-                    src_text, src_cols = self.build_input_view(view_data)
-                    elaborations_query_mapping[idx][key] = [src_text, src_cols]
 
-            example['elaborations_query_mapping'] = elaborations_query_mapping
+        # For both types of Inference, we want to parse all views, and build an
+        # efficient mapping that can either be queried at each new sentence for
+        # new grounding views, or used to build human readable plans
+        elaborations_query_mapping = dict()
+        for idx, view_dict in enumerate(inputs):
+            elaborations_query_mapping[idx] = dict()
+            for key in ['<time>', '<event>']:
+                elaborations_key = self.reverse_elaboration_mapping[key]
+                view_data = view_dict["data"][elaborations_key]
+                src_text, src_cols = self.build_input_view(view_data)
+                elaborations_query_mapping[idx][key] = [src_text, src_cols]
+            elaborations_query_mapping[idx]['<primary>'] = view_dict["data"][self.reverse_elaboration_mapping['<primary>']]
+
+        example['elaborations_query_mapping'] = elaborations_query_mapping
 
         # We can now join everything as a long string, to be split on spaces
         example['src'] = [' '.join(more_itertools.collapse(seq))

@@ -1,5 +1,5 @@
+from onmt.inference import BeamSearch, GNMTGlobalScorer, Serializer
 from onmt.modules.copy_generator import collapse_copy_scores
-from onmt.inference import BeamSearch, GNMTGlobalScorer
 from onmt.utils.misc import Container, sequence_mask
 from onmt.rotowire.dataset import numericalize
 from onmt.model_builder import load_test_model
@@ -45,12 +45,12 @@ class BaseInference:
                  block_ngram_repeat,
                  ignore_when_blocking,
 
-                 desc_dest,
-                 plan_dest,
                  logger):
 
         self.model = model
         self.vocabs = vocabs
+
+        self.serializer = None
 
         self.seed = seed
 
@@ -61,8 +61,6 @@ class BaseInference:
         self.block_ngram_repeat = block_ngram_repeat
         self.ignore_when_blocking = ignore_when_blocking
 
-        self.desc_dest = desc_dest
-        self.plan_dest = plan_dest
         self.logger = logger
 
         # This should be specified by children of this base class
@@ -91,52 +89,37 @@ class BaseInference:
             block_ngram_repeat=opts.block_ngram_repeat,
             ignore_when_blocking=set(opts.ignore_when_blocking),
 
-            desc_dest=opts.desc_dest,
-            plan_dest=opts.plan_dest,
             logger=logger,
         )
 
-    def run(self, filename, batch_size, if_file_exists='raise'):
+    def init_serializer(self, plan_dest, desc_dest, if_file_exists):
+        if self.serializer is not None:
+            self.logger.warn('Initiating serializer over previous one.')
+        self.serializer = Serializer(self.vocabs,
+                                     self.logger,
+                                     desc_dest,
+                                     plan_dest,
+                                     if_file_exists)
 
-        if if_file_exists not in {'raise', 'overwrite', 'append'}:
-            raise ValueError(f'Unknown instruction {if_file_exists=}')
+    def run(self, src_filename, plan_dest, desc_dest,
+            batch_size, if_file_exists='raise'):
 
-        if os.path.exists(self.dest):
-            if if_file_exists == 'raise':
-                raise RuntimeError(f'{self.dest} already exists!')
-            elif if_file_exists == 'overwrite':
-                self.logger.info(f'Overwrite destination file: {self.dest}')
-                with open(self.dest, mode="w", encoding='utf8') as f:
-                    pass  # overwrites
-            else:
-                self.logger.info('Appending new generations to existing file: '
-                                 f'{self.dest}')
+        self.init_serializer(plan_dest, desc_dest, if_file_exists)
 
         dataset_cls = RotowireInferenceDataset
         if self.is_guided_inference:
             dataset_cls = RotowireGuidedInferenceDataset
 
         dataset = dataset_cls.build_from_raw_json(
-            filename, config=self.model.config, vocabs=self.vocabs)
+            src_filename, config=self.model.config, vocabs=self.vocabs)
 
         opt = Container(batch_size=batch_size, num_threads=1)
         inference_iter = build_dataset_iter(dataset, opt, self.device)
 
         for batch in tqdm.tqdm(inference_iter, desc="Running Inference"):
+            self.serializer.prep_serialization(batch)
             batch_predicted_descriptions = self.run_on_batch(batch)
-
-            kwargs = {"mode": "a", "encoding": "utf8"}
-            with MultiOpen(self.desc_dest, self.plan_dest, **kwargs) as files:
-                desc_file, plan_file = files
-                for desc, plan in zip(*batch_predicted_descriptions):
-                    assert len(desc) == len(plan)
-
-                    for sentence, (entities, elab) in zip(desc, plan):
-                        desc_file.write(sentence.strip('<s> ').replace('_', ' ') + '\n')
-                        plan_file.write(f'{entities} {elab}\n')
-
-                    desc_file.write('\n')
-                    plan_file.write('\n')
+            self.serializer.serialize(batch_predicted_descriptions)
 
     def run_on_batch(self, batch):
 
@@ -213,8 +196,8 @@ class BaseInference:
             self.predict_one_sentence(decode_strategy, batch,
                                       memory_bank, src_lengths)
 
-            decoded_sentences = self.build_translated_sentences(decode_strategy,
-                                                                batch)
+            decoded_sentences = self.serializer.build_translated_sentences(
+                                                        decode_strategy, batch)
 
             for sents, new_sent in zip(current_sentences, decoded_sentences):
                 sents.append(new_sent)
@@ -371,61 +354,6 @@ class BaseInference:
             'primary_mask': torch.stack(states['primary_mask']).unsqueeze(0),
             'tracking': torch.stack(states['tracking']).unsqueeze(0),
         }
-
-    def _build_target_tokens(self, src_length, src_vocab, src_map, pred, attn):
-        vocab = self.vocabs['main_vocab']
-        tokens = list()
-
-        for idx, tok in enumerate(pred):
-
-            if tok < len(vocab):
-                lexicalized_tok = vocab.itos[tok]
-            else:
-                lexicalized_tok = src_vocab.itos[tok - len(vocab)]
-
-            if lexicalized_tok == '<unk>':
-                _, max_index = attn['copy'][idx][:src_length].max(0)
-                tok = src_map[max_index].nonzero().item()
-                lexicalized_tok = src_vocab.itos[tok]
-            elif lexicalized_tok == '</s>':
-                break
-
-            tokens.append(lexicalized_tok)
-
-        return tokens
-
-    def build_translated_sentences(self,
-                                   decode_strategy,
-                                   batch):
-        results = dict()
-        results["scores"] = decode_strategy.scores
-        results["predictions"] = decode_strategy.predictions
-        results["attention"] = decode_strategy.attention
-
-        # Reordering beams using the sorted indices
-        preds, pred_score, attn, indices = list(zip(
-            *sorted(zip(results["predictions"],
-                        results["scores"],
-                        results["attention"],
-                        batch.indices.data),
-                    key=lambda x: x[-1])))
-
-        translations = list()
-        for b in range(batch.batch_size):
-            src_lengths = batch.src[1][b]
-            src_vocab = batch.src_ex_vocab[b]
-            src_map = batch.src_map[:, b]
-
-            pred_sents = [self._build_target_tokens(
-                src_lengths,
-                src_vocab,
-                src_map,
-                preds[b][n],
-                attn[b][n])
-                for n in range(1)]
-
-            translations.append(' '.join(pred_sents[0]))
-        return translations
 
 
 class Inference(BaseInference):

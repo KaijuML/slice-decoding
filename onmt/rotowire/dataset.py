@@ -388,6 +388,8 @@ class RotowireGuidedInferenceDataset(RotowireInferenceDataset):
         raw_example = self.examples[item]
         example = self._build_example_source(raw_example, item)
 
+        example['elaborations_query_mapping'] = raw_example['elaborations_query_mapping']
+
         # Numericalize elaborations
         elaborations = numericalize(raw_example['elaborations'], self.elab_vocab)
         example['elaborations'] = torch.LongTensor(elaborations)
