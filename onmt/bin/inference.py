@@ -142,7 +142,11 @@ def get_parser():
 def single_main(args):
     configure_process(args.seed, args.gpu)
     inference = build_inference(args, logger)
-    inference.run(args.source_file, args.batch_size, if_file_exists='overwrite')
+    inference.run(args.source_file,
+                  args.desc_dest,
+                  args.plan_dest,
+                  args.batch_size,
+                  if_file_exists='overwrite')
 
 
 def main(args=None):
