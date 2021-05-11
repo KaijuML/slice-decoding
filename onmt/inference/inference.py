@@ -101,7 +101,7 @@ class BaseInference:
                                      plan_dest,
                                      if_file_exists)
 
-    def run(self, src_filename, plan_dest, desc_dest,
+    def run(self, src_filename, desc_dest, plan_dest,
             batch_size, if_file_exists='raise'):
 
         self.init_serializer(plan_dest, desc_dest, if_file_exists)
