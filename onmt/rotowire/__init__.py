@@ -1,4 +1,4 @@
-
+from onmt.rotowire.utils import Vocab
 from onmt.rotowire.config import RotowireConfig
 from onmt.rotowire.dataset import (
     RotowireTrainingDataset,

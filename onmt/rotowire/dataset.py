@@ -8,7 +8,7 @@ from onmt.rotowire.utils import FileIterable
 from torch.nn.utils.rnn import pad_sequence
 from onmt.utils.logging import logger
 from torch.utils.data import Dataset
-from torchtext.vocab import Vocab
+from onmt.rotowire import Vocab
 from collections import Counter
 
 from onmt.rotowire.exceptions import (

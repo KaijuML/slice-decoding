@@ -1,5 +1,5 @@
 from configargparse import ArgumentParser
-from torchtext.vocab import Vocab
+from onmt.rotowire import Vocab
 from collections import Counter
 import subprocess
 

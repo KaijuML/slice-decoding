@@ -1,8 +1,15 @@
+from torchtext.vocab import Vocab as TorchtextVocab
+
 import tqdm.notebook as tqdm_notebook
 import more_itertools
 import tqdm
 import json
 import os
+
+
+class Vocab(TorchtextVocab):
+    def __contains__(self, item):
+        return self.stoi.get(item, None) is not None
 
 
 class MultiOpen:
