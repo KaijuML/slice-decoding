@@ -4,6 +4,7 @@ from collections import Counter
 import more_itertools
 import torch
 
+from onmt.rotowire.template import TemplatePlan
 from onmt.rotowire import RotowireConfig
 from onmt.utils.logging import logger
 
@@ -331,17 +332,25 @@ class RotowireTrainingParser(RotowireParser):
 
 class RotowireInferenceParser(RotowireTrainingParser):
 
-    def __init__(self, config, guided_inference=True):
+    def __init__(self, config, template_file=None, guided_inference=True):
         super().__init__(config=config)
+        self.template_file = template_file
         self.guided_inference = guided_inference
+
+        if self.template_file is not None and not self.guided_inference:
+            raise ValueError('Templates can only be used during GuidedInference')
 
     def _parse_example(self, jsonline):
 
         inputs, outputs = jsonline['inputs'], jsonline['outputs']
 
-        # Quickly convert inputs as an ordered list instead of a dict
-        if isinstance(inputs, dict):
-            inputs = [inputs[str(idx)] for idx in range(len(inputs))]
+        template = None
+        if self.template_file is not None:
+            template = TemplatePlan(
+                self.template_file,  # formal templating language
+                [e['data']['PRIMARY'] for e in inputs],  # raw data
+                self.config  # config file
+            )
 
         # What this function will return
         example = dict()
@@ -358,21 +367,32 @@ class RotowireInferenceParser(RotowireTrainingParser):
         input_sequence = [list(), list()]
 
         # Before building the input tensors, we must also consider that some
-        # primary entities will be elaborated during the summary.
-        # We take this opportunity to standardize elaboration names, and when
-        # needed cast some weird elaborations to <none>.
+        # primary entities will be elaborated during the summary. Elaborations
+        # and grounding entities can be decided by the true plan or by the
+        # user-defined template.
+        # When going with the true plan, we take this opportunity to standardize
+        # elaboration names, and when needed cast some weird elaborations to <none>.
         entity_elaborations = list()
-        for sentence in outputs:
-            gt = self.elaboration_mapping.get(sentence['grounding_type'], None)
-            sentence['grounding_type'] = gt
-            if gt is None:
-                raise UnknownElaborationError(sentence['grounding_type'])
+        if template is None and self.guided_inference:
+            for sentence in outputs:
+                gt = self.elaboration_mapping.get(sentence['grounding_type'], None)
+                if gt is None:
+                    raise UnknownElaborationError(sentence['grounding_type'])
+                sentence['grounding_type'] = gt  # normalization
 
-            if sentence['grounding_type'] in {'<time>', '<event>'}:
-                entity_elaborations.extend([
-                    [int(view_idx_str), sentence['grounding_type']]
-                    for view_idx_str in sentence['grounding_data']
-                ])
+                if sentence['grounding_type'] in {'<time>', '<event>'}:
+                    entity_elaborations.extend([
+                        [int(view_idx_str), sentence['grounding_type']]
+                        for view_idx_str in sentence['grounding_data']
+                    ])
+
+        elif template is not None:
+            for elaboration, view_idxs in template:
+                if elaboration in {'<time>', '<event>'}:
+                    entity_elaborations.extend([
+                        [view_idx, elaboration]
+                        for view_idx in view_idxs
+                    ])
 
         # We first add all primary entities to the input tensors
         for view_dict in inputs:
@@ -396,7 +416,7 @@ class RotowireInferenceParser(RotowireTrainingParser):
         elaboration_view_idxs = dict()
         if self.guided_inference:
             # For GuidedInference, we also need the grounding views for each
-            # of the summary's sentences.
+            # of planned sentences (either true plan or template plan).
             for view_idx, elaboration in entity_elaborations:
                 elaboration_key = self.reverse_elaboration_mapping[elaboration]
                 view_data = inputs[view_idx]["data"][elaboration_key]
@@ -451,8 +471,9 @@ class RotowireInferenceParser(RotowireTrainingParser):
             return example
 
         # From now on, we are in GuidedInference territory. We want to build
-        # the elaboration and contexts lists, so that inference can be guided
-        # with the same plan that was used by human annotators.
+        # the elaboration and contexts lists, to fit one of two cases:
+        #    1) Inference guided by the plan that was used by human annotators.
+        #    2) Inference guided by template plan
 
         # This is a list containing the type of elaboration required to
         # write the associated sentence. Currently supports:
@@ -462,6 +483,26 @@ class RotowireInferenceParser(RotowireTrainingParser):
 
         # Tracks which entities are relevant for a given sentence
         contexts = list()
+
+        # Inference guided by template plan
+        if template is not None:
+            for elaboration, view_idxs in template:
+                elaborations.append(elaboration)
+                contexts.append(view_idxs)
+
+                # We also add the slice used for elaborations <time> & <event>
+                if elaboration in {'<time>', '<event>'}:
+                    contexts[-1].extend([
+                        elaboration_view_idxs[view_idx, elaboration]
+                        for view_idx in contexts[-1]
+                    ])
+
+            # Everything is done for this type of GuidedInference
+
+            example['elaborations'] = elaborations + ['<eod>']
+            example['contexts'] = contexts
+
+            return example
 
         for sidx, sentence in enumerate(outputs):
 

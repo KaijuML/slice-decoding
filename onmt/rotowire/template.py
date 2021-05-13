@@ -15,17 +15,26 @@ class TemplatePlan:
     elab_pattern = re.compile('^<[a-z]+>')
     ent_pattern = re.compile(r'^(team|player)(\[(([a-zA-Z]+=[a-zA-Z0-9]+)(,\s*)?)+\])')
 
-    def __init__(self, filename, game, config=None):
+    def __init__(self, filename, raw_data, config=None):
         self.config = config
         if self.config is None:
             logger.info('Loading default config.')
             self.config = RotowireConfig.from_defaults()
 
-        self.game = game
+        self.game = Game(raw_data)
         with open(filename, mode="r", encoding='utf8') as f:
             self.sentences = [self.read_line(idx, line)
                               for idx, line in enumerate(f)
                               if line.strip()]
+
+    def __len__(self):
+        return len(self.sentences)
+
+    def __iter__(self):
+        yield from self.sentences
+
+    def __getitem__(self, item):
+        return self.sentences[item]
 
     def read_line(self, idx, line):
         elab = self.elab_pattern.search(line)

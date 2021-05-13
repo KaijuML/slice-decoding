@@ -108,14 +108,14 @@ class RotowireDataset(Dataset):
             raise ValueError('vocabs are missing main_vocab')
         elif not isinstance(main_vocab, Vocab):
             raise ValueError('main_vocab should be Vocab. '
-                             f'Instead, main_vocab is {type(main_vocab.__name__)}')
+                             f'Instead, main_vocab is {type(main_vocab).__name__}')
 
         cols_vocab = vocabs.get('cols_vocab', None)
         if cols_vocab is None:
             raise ValueError('vocabs are missing main_vocab')
         elif not isinstance(cols_vocab, Vocab):
             raise ValueError('main_vocab should be Vocab. '
-                             f'Instead, main_vocab is {type(cols_vocab.__name__)}')
+                             f'Instead, main_vocab is {type(cols_vocab).__name__}')
 
         return {'main_vocab': main_vocab, 'cols_vocab': cols_vocab}
         
@@ -373,9 +373,13 @@ class RotowireInferenceDataset(RotowireDataset):
 class RotowireGuidedInferenceDataset(RotowireInferenceDataset):
 
     @classmethod
-    def build_from_raw_json(cls, filename, config, vocabs, raise_on_error=True):
+    def build_from_raw_json(cls, filename, config, vocabs,
+                            template_file=None, raise_on_error=True):
 
-        parser = RotowireInferenceParser(config=config, guided_inference=True)
+        parser = RotowireInferenceParser(config=config,
+                                         template_file=template_file,
+                                         guided_inference=True)
+
         return cls._build_from_raw_json(filename=filename,
                                         config=config,
                                         vocabs=vocabs,

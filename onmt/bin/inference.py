@@ -64,6 +64,7 @@ def build_container(args, step, gpu):
 
     return Container(
         guided_inference=args.guided_inference,
+        template_file=args.template_file,
 
         source_file=args.source_file,
         model_path=model_path,
@@ -105,6 +106,8 @@ def get_parser():
     group = parser.add_argument_group('Inference (high level)')
     group.add_argument('--guided-inference', dest='guided_inference',
                        action='store_true', help='Use the true plans or not.')
+    group.add_argument('--template-file', dest='template_file', type=str,
+                       help="path toward template specification file")
 
     # Model checkpoints, one or many
     ckpts = parser.add_mutually_exclusive_group(required=True)
@@ -143,6 +146,7 @@ def single_main(args):
     configure_process(args.seed, args.gpu)
     inference = build_inference(args, logger)
     inference.run(args.source_file,
+                  args.template_file,
                   args.desc_dest,
                   args.plan_dest,
                   args.batch_size,

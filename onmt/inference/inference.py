@@ -3,7 +3,6 @@ from onmt.modules.copy_generator import collapse_copy_scores
 from onmt.utils.misc import Container, sequence_mask
 from onmt.rotowire.dataset import numericalize
 from onmt.model_builder import load_test_model
-from onmt.rotowire.utils import MultiOpen
 
 from onmt.rotowire import (
     RotowireGuidedInferenceDataset,
@@ -13,7 +12,6 @@ from onmt.rotowire import (
 
 import torch
 import tqdm
-import os
 
 
 PREP_SENTENCE_GENERATION_N_OUPTUS = 6
@@ -101,7 +99,7 @@ class BaseInference:
                                      plan_dest,
                                      if_file_exists)
 
-    def run(self, src_filename, desc_dest, plan_dest,
+    def run(self, src_filename, template_file, desc_dest, plan_dest,
             batch_size, if_file_exists='raise'):
 
         self.init_serializer(plan_dest, desc_dest, if_file_exists)
@@ -110,8 +108,16 @@ class BaseInference:
         if self.is_guided_inference:
             dataset_cls = RotowireGuidedInferenceDataset
 
-        dataset = dataset_cls.build_from_raw_json(
-            src_filename, config=self.model.config, vocabs=self.vocabs)
+        datakwargs = {
+            'config': self.model.config,
+            'vocabs': self.vocabs
+        }
+        if template_file is not None:
+            if not self.is_guided_inference:
+                raise RuntimeError('Templates can only be used in GuidedInference')
+            datakwargs['template_file'] = template_file
+
+        dataset = dataset_cls.build_from_raw_json(src_filename, **datakwargs)
 
         opt = Container(batch_size=batch_size, num_threads=1)
         inference_iter = build_dataset_iter(dataset, opt, self.device)
