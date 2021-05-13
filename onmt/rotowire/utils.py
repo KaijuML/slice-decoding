@@ -2,6 +2,7 @@ from torchtext.vocab import Vocab as TorchtextVocab
 
 import tqdm.notebook as tqdm_notebook
 import more_itertools
+import copy
 import tqdm
 import json
 import os
@@ -10,6 +11,48 @@ import os
 class Vocab(TorchtextVocab):
     def __contains__(self, item):
         return self.stoi.get(item, None) is not None
+
+
+def maybe_upgrade_vocabs(vocabs: dict, config, logger):
+
+    # As usual, always deepcopy objects. Here it's not really costly (~25ms)
+    # and enables better sanity check down the line.
+    new_vocabs = copy.deepcopy(vocabs)
+
+    vname2kwargs = {
+        'main_vocab': {
+            'max_size': config.vocab_size,
+            'specials': ['<unk>', '<pad>', '<s>', '</s>', '<ent>']
+        },
+        'cols_vocab': {
+            'specials': ['<unk>', '<pad>', '<ent>']
+        },
+        'elab_vocab': dict()
+    }
+
+    pytorch_vocabs = {
+        vname: vocab
+        for vname, vocab in vocabs.items()
+        if isinstance(vocab, TorchtextVocab)
+    }
+
+    if vnames := list(pytorch_vocabs):
+        logger.warn(f"TorchtextVocab detected ({vnames}). They'll be upgraded")
+        logger.warn("to rotowire.utils.Vocab. Be carefull with results from now...")
+
+        for vname, vocab in pytorch_vocabs.items():
+            new_vocabs[vname] = Vocab(vocab.freqs, **vname2kwargs[vname])
+
+        if 'elab_vocab' in vnames:
+            config.elaboration_vocab = new_vocabs['elab_vocab']
+
+    # Sanity checks (same number of vocabs, with similar stoi/itos)
+    assert set(new_vocabs) == set(vocabs)
+    for vname, vocab in new_vocabs.items():
+        assert vocab.stoi == vocabs[vname].stoi
+        assert vocab.itos == vocabs[vname].itos
+
+    return new_vocabs
 
 
 class MultiOpen:

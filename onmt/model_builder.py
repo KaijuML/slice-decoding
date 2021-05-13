@@ -5,7 +5,6 @@ on RotoWire.
 
 It's not possible to build any other model than the one presented in our paper.
 """
-import re
 import torch
 from torch.nn.init import xavier_uniform_
 
@@ -15,6 +14,7 @@ from onmt.encoders import HierarchicalTransformerEncoder
 from onmt.decoders import HierarchicalRNNDecoder
 
 from onmt.modules import TableEmbeddings, CopyGenerator, ContextPredictor
+from onmt.rotowire.utils import maybe_upgrade_vocabs
 from onmt.utils.parse import ArgumentParser
 from onmt.utils.misc import format_device
 from onmt.utils.logging import logger
@@ -54,6 +54,9 @@ def build_embeddings(opt, main_vocab, cols_vocab):
 
 
 def load_test_model(model_path, device=None):
+
+    logger.info(f'Loading checkpoint from: {model_path}')
+
     device = format_device(device)
 
     checkpoint = torch.load(model_path,
@@ -63,7 +66,9 @@ def load_test_model(model_path, device=None):
     ArgumentParser.update_model_opts(model_opt)
     ArgumentParser.validate_model_opts(model_opt)
 
-    vocabs = checkpoint['vocabs']
+    vocabs = maybe_upgrade_vocabs(checkpoint['vocabs'],
+                                  checkpoint['config'],
+                                  logger)
 
     model = build_base_model(model_opt,
                              vocabs,
@@ -72,6 +77,9 @@ def load_test_model(model_path, device=None):
                              -1).to(device)
     model.eval()
     model.generator.eval()
+
+    logger.info('Checkpoint loaded successfully.')
+
     return vocabs, model, model_opt
 
 
