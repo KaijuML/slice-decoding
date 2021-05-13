@@ -345,6 +345,9 @@ class RotowireInferenceDataset(RotowireDataset):
         vocabs = cls.check_vocabs(vocabs)
 
         logger.info(f'Constructing {cls.__name__}, using data at: {filename}')
+        if parser.template_file is not None:
+            logger.info('Inference will be guided by template at: '
+                        f'{parser.template_file}')
         logger.info(config)
 
         examples = list()
