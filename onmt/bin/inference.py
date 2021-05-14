@@ -39,23 +39,39 @@ def regularize_args(args):
     return args
 
 
+def build_dest_filename(args, step):
+    """
+    In case no filename prefix is given, builds one with major hparams
+    """
+    if (dest_prefix := args.dest_prefix) is None:
+
+        hparams = [
+            ['step', step],
+            ['guided', args.guided_inference],
+            ['bms', args.beam_size],
+            ['blk', args.block_ngram_repeat]
+        ]
+        hparams = f'{".".join(f"{k}={v}" for k, v in hparams)}'
+
+        dest_prefix = guess_if_validation_or_test(args.source_file)
+        dest_prefix = os.path.join('experiments', args.experiment, 'gens', dest_prefix)
+        dest_prefix = os.path.join(dest_prefix, hparams)
+
+    else:
+        dest_prefix = f'{dest_prefix}.step_{step}'
+
+    desc_dest = dest_prefix + '.desc'
+    plan_dest = dest_prefix + '.plan'
+
+    return desc_dest, plan_dest
+
+
 def build_container(args, step, gpu):
     """
     Build a fake Namespace for an inference run.
     """
-    hparams = [
-        ['step', step],
-        ['guided', args.guided_inference],
-        ['bms', args.beam_size],
-        ['blk', args.block_ngram_repeat]
-    ]
 
-    dest = guess_if_validation_or_test(args.source_file)
-    dest = os.path.join('experiments', args.experiment, 'gens', dest)
-    dest = os.path.join(dest, f'{".".join(f"{k}={v}" for k, v in hparams)}')
-
-    desc_dest = dest + '.desc'
-    plan_dest = dest + '.plan'
+    desc_dest, plan_dest = build_dest_filename(args, step)
 
     model_path = os.path.join('experiments',
                               args.experiment,
@@ -98,6 +114,8 @@ def get_parser():
     group = parser.add_argument_group('File System')
     group.add_argument('--source-file', dest='source_file', required=True,
                        help='path to evaluation set file. Should be .jsonl')
+    group.add_argument('--dest-prefix', dest='dest_prefix', default=None,
+                       help='prefix for model outputs files')
     group.add_argument('--experiment', dest='experiment', required=True,
                        help="Experiment folder (e.g. exp-1/)")
     group.add_argument('--log-file', dest='log_file',
