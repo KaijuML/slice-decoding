@@ -1,4 +1,4 @@
-from torchtext.vocab import Vocab
+from onmt.rotowire import Vocab
 from collections import Counter
 
 import more_itertools
