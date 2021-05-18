@@ -188,21 +188,18 @@ def main(args=None):
         logger.info(f'Doing {len(args.gpus)} inference runs in parallel, on '
                     f'gpus {", ".join(str(gpu) for gpu in args.gpus)}.')
 
-        gpus = args.gpus * math.ceil(len(args.checkpoints) / len(args.gpus))
-        containers = [
-            build_container(args, ckpt, gpu)
-            for ckpt, gpu in zip(args.checkpoints, gpus)
-            if ckpt is not None
-        ]
+        for steps in grouped(args.checkpoints, len(args.gpus)):
 
-        with mp.Pool(processes=len(args.gpus)) as pool:
-            _iterable = pool.imap(
-                single_main,
-                containers,
-            )
+            containers = [
+                build_container(args, step, gpu)
+                for step, gpu in zip(steps, args.gpus)
+                if step is not None
+            ]
 
-            for _ in _iterable:
-                pass
+            processes = [mp.Process(target=single_main, args=(container,))
+                         for container in containers]
+            [p.start() for p in processes]
+            [p.join() for p in processes]
 
 
 if __name__ == '__main__':
