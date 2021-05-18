@@ -14,8 +14,17 @@ class Container:
     Dummy class that can be instantiated with arbitrary key-word arguments
     """
     def __init__(self, **kwargs):
-        for key, value in kwargs.items():
+        self.__state = kwargs
+        self.__setstate__(self.__state)
+
+    def __setstate__(self, state):
+        """Used by the python builtin multiprocessing library"""
+        for key, value in state.items():
             setattr(self, key, value)
+
+    def __getstate__(self):
+        """Used by the python builtin multiprocessing library"""
+        return self.__state
 
     def __getattr__(self, item):
         """Only called when item is not known to the container"""
