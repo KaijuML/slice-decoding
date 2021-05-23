@@ -9,7 +9,6 @@
           users of this library) for the strategy things we do.
 """
 
-
 from onmt.utils.misc import check_object_for_nan
 from onmt.utils.logging import logger
 
@@ -32,9 +31,9 @@ def build_trainer(opt, model, vocabs, optim, model_saver=None):
         model_saver(:obj:`onmt.models.ModelSaverBase`): the utility object
             used to save the model
     """
-    
-    sentence_loss, context_loss = onmt.utils.loss.build_loss_computes(model, 
-                                                                      vocabs, 
+
+    sentence_loss, context_loss = onmt.utils.loss.build_loss_computes(model,
+                                                                      vocabs,
                                                                       opt)
 
     norm_method = opt.normalization
@@ -49,17 +48,17 @@ def build_trainer(opt, model, vocabs, optim, model_saver=None):
 
     device_id = 0 if opt.use_gpu else -1
     report_manager = onmt.utils.build_report_manager(opt, device_id)
-    trainer = onmt.Trainer(model, sentence_loss, context_loss,
-                           optim, norm_method,
-                           accum_count, accum_steps,
-                           elab_loss_weight=opt.elab_loss_weight,
-                           ents_loss_weight=opt.ents_loss_weight,
-                           report_manager=report_manager,
-                           model_saver=model_saver,
-                           average_decay=average_decay,
-                           average_every=average_every,
-                           model_dtype=opt.model_dtype,
-                           earlystopper=earlystopper)
+    trainer = Trainer(model, sentence_loss, context_loss,
+                      optim, norm_method,
+                      accum_count, accum_steps,
+                      elab_loss_weight=opt.elab_loss_weight,
+                      ents_loss_weight=opt.ents_loss_weight,
+                      report_manager=report_manager,
+                      model_saver=model_saver,
+                      average_decay=average_decay,
+                      average_every=average_every,
+                      model_dtype=opt.model_dtype,
+                      earlystopper=earlystopper)
     return trainer
 
 
@@ -140,7 +139,7 @@ class Trainer(object):
                  sentence_loss,
                  context_loss,
                  optim,
-                 norm_method: str ="sents",
+                 norm_method: str = "sents",
                  accum_count: Union[int] = [1],
                  accum_steps: Union[int] = [0],
                  elab_loss_weight: float = .15,
@@ -171,7 +170,7 @@ class Trainer(object):
         self.earlystopper = earlystopper
         self.elab_loss_weight = elab_loss_weight
         self.ents_loss_weight = ents_loss_weight
-        
+
         for i in range(len(self.accum_count_l)):
             assert self.accum_count_l[i] > 0
 
@@ -210,7 +209,7 @@ class Trainer(object):
             self.moving_average = copy_params
         else:
             average_decay = max(self.average_decay,
-                                1 - (step + 1)/(step + 10))
+                                1 - (step + 1) / (step + 10))
             for (i, avg), cpt in zip(enumerate(self.moving_average),
                                      self.model.parameters()):
                 self.moving_average[i] = \
@@ -272,8 +271,8 @@ class Trainer(object):
                     report_stats)
 
                 if (self.model_saver is not None
-                    and (save_checkpoint_steps != 0
-                         and step % save_checkpoint_steps == 0)):
+                        and (save_checkpoint_steps != 0
+                             and step % save_checkpoint_steps == 0)):
                     self.model_saver.save(step, moving_average=self.moving_average)
 
                 if 0 < train_steps <= step:
@@ -288,7 +287,7 @@ class Trainer(object):
         return self.model.device
 
     def _gradient_accumulation(self, true_batches, total_stats, report_stats):
-        
+
         # Zeroing gradient before iterating through batches
         self.optim.zero_grad()
 
@@ -299,7 +298,7 @@ class Trainer(object):
                 report_stats.n_src_words += src_lengths.sum().item()
 
             with torch.cuda.amp.autocast(enabled=self.optim.amp):
-                
+
                 # 1. Encode the entire input table. Both primary entities
                 #    and additional entities are encoded here.
                 memory_bank = self.model.encoder(*batch.src, batch.n_primaries)
@@ -355,7 +354,7 @@ class Trainer(object):
                                          sentences=sentences,
                                          context_repr=context_repr,
                                          contexts=contexts,
-                                         memory_bank=memory_bank,)
+                                         memory_bank=memory_bank)
 
                 # 3. Compute losses based on decoder's hidden states.
 
@@ -387,7 +386,7 @@ class Trainer(object):
 
                 losses['ents'] = ents_loss / _batch.batch_size
                 losses['elab'] = elab_loss / _batch.batch_size
-                    
+
                 # Gather stats from each batch example
                 total_stats.update(batch_stats)
                 report_stats.update(batch_stats)
@@ -408,7 +407,7 @@ class Trainer(object):
         """
         TODO: compute an actual weighted average of the losses.
         """
-        
+
         main_loss = loss_dict['main']
         ents_loss = loss_dict['ents']
         elab_loss = loss_dict['elab']
