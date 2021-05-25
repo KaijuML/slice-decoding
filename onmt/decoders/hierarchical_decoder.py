@@ -28,7 +28,6 @@ class HierarchicalRNNDecoder(torch.nn.Module):
 
                  attn_type="general",
                  attn_func="softmax",
-                 copy_attn_type="general",
                  use_cols_in_attention=True,
                  separate_copy_mechanism=False,
 
@@ -45,7 +44,6 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             dropout=dropout,
             attn_type=attn_type,
             attn_func=attn_func,
-            copy_attn_type=copy_attn_type,
             use_cols_in_attention=use_cols_in_attention,
             separate_copy_mechanism=separate_copy_mechanism,
             entity_aggregation_heads=entity_aggregation_heads,
@@ -95,10 +93,13 @@ class HierarchicalRNNDecoder(torch.nn.Module):
 
         # 3.2 Set up a distinct copy mechanism if asked by user
         if self._separate_copy_mechanism:
+            raise ValueError('We have decided for now to now train with this '
+                             'feature enabled for now.')
+        if self._separate_copy_mechanism:
             self.copy_attn = HierarchicalAttention(
                 (self.hidden_size, units_size),
                 entity_size=self.entity_size,
-                attn_type=copy_attn_type, attn_func=attn_func,
+                attn_type=attn_type, attn_func=attn_func,
                 use_pos=use_cols_in_attention)
 
         # 4.1 Set up the aggregation layer. It'll be used to aggregate the
@@ -128,9 +129,9 @@ class HierarchicalRNNDecoder(torch.nn.Module):
     @staticmethod
     def _check_arg_types_and_values(embeddings=None, dataset_config=None,
             num_layers=2, dropout=0.0, attn_type="general", attn_func="softmax",
-            copy_attn_type="general", use_cols_in_attention=True,
-            separate_copy_mechanism=False, entity_aggregation_heads=1,
-            entity_aggregation_do_proj=True, elaboration_dim=5):
+            use_cols_in_attention=True, separate_copy_mechanism=False,
+            entity_aggregation_heads=1, entity_aggregation_do_proj=True,
+            elaboration_dim=5):
 
         assert embeddings is not None
         assert dataset_config is not None
@@ -138,7 +139,6 @@ class HierarchicalRNNDecoder(torch.nn.Module):
         assert isinstance(dropout, float) and 0 <= dropout < 1
         assert attn_type in {"dot", "general", "mlp"}
         assert attn_func == 'softmax'
-        assert copy_attn_type in {"dot", "general", "mlp"}
         assert isinstance(use_cols_in_attention, bool)
         assert isinstance(separate_copy_mechanism, bool)
         assert isinstance(entity_aggregation_heads, int) and entity_aggregation_heads > 0
@@ -210,7 +210,6 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             attn_func=opt.global_attention_function,
             dropout=opt.dropout,
             separate_copy_mechanism=opt.separate_copy_mechanism,
-            copy_attn_type=opt.copy_attn_type,
             use_cols_in_attention=opt.use_cols_in_attention,
             entity_aggregation_heads=opt.entity_aggregation_heads,
             entity_aggregation_do_proj=opt.entity_aggregation_do_proj,
@@ -388,7 +387,13 @@ class HierarchicalRNNDecoder(torch.nn.Module):
 
             # High level mask is changing with each token, depending on which
             # sentence they belong to, and the grounding entities.
-            if self.use_primary_mask_only:
+            # When self.use_primary_mask_only is set, we don't use dynamic
+            # masking and keep a broad attention focus over all primary entities
+            # When self._separate_copy_mechanism is set, we want a broad
+            # attention focus (over all primaries) for normal token generation
+            # (e.g. not copied information). Copy mechanism will rely on a second
+            # attention, we'll deal with dynamic masking then.
+            if self.use_primary_mask_only or self._separate_copy_mechanism:
                 memory_bank['high_level_mask'] = self.state['primary_mask']
             else:
                 dmask = self.build_dynamic_high_level_mask(index, n_entities)
@@ -396,7 +401,10 @@ class HierarchicalRNNDecoder(torch.nn.Module):
                     dmask = dmask and self.state['primary_mask']
                 memory_bank['high_level_mask'] = dmask
 
+            # Run the decoder for one step
             decoder_output, ret = self.attn(rnn_output, memory_bank)
+
+            # Keep track of attention
             for postfix, tensor in ret.items():
                 key = 'std' + postfix
                 attns.setdefault(key, list())
@@ -407,16 +415,34 @@ class HierarchicalRNNDecoder(torch.nn.Module):
             decoder_outputs.append(decoder_output)
             decoder_states = dec_state
 
+            # We might want to use a second attention distribution, dedicated to
+            # the copy mechanism. Regarding dynamic masking, we have the same
+            # choices than at line 397.
             if self._separate_copy_mechanism:
+
+                if self.use_primary_mask_only:
+                    memory_bank['high_level_mask'] = self.state['primary_mask']
+                else:
+                    dmask = self.build_dynamic_high_level_mask(index, n_entities)
+                    if self.never_mask_primaries:
+                        dmask = dmask and self.state['primary_mask']
+                    memory_bank['high_level_mask'] = dmask
+
                 _, copy_attn = self.copy_attn(decoder_output, memory_bank)
                 for postfix, tensor in copy_attn.items():
                     key = 'copy' + postfix
                     attns.setdefault(key, list())
                     attns[key].append(tensor)
 
-        # this trick should save memory because torch.stack creates a new
-        # object. Here we use torch.stack before duplicating the attn keys,
-        # to ensure create the object once.
+        # At this point, the decoder states are already computed for each token.
+        # The only need we have of attention is for the copy mechanism. (recall
+        # that now, we use a prediction layer on top of each states to decide
+        # whether to copy or generated a vocab word. Generating a vocab word
+        # is a straightforward projection of the decoder state into the vocabulary
+        # space, whereas copying a word is done by selecting the input word with
+        # the highest attention score.
+        # Because we might not have computed a copy attention explicitly, we
+        # simply duplicate the standard attention to be reused for copy.
         for key in list(attns):
             if key.startswith('std'):
                 attns[key] = torch.stack(attns[key])
