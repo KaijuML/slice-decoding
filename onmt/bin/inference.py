@@ -43,25 +43,32 @@ def build_dest_filename(args, step):
     """
     In case no filename prefix is given, builds one with major hparams
     """
-    if (dest_prefix := args.dest_prefix) is None:
 
+    # First, build the destination filename
+    if args.dest_prefix is None:
         hparams = [
             ['step', step],
             ['guided', args.guided_inference],
             ['bms', args.beam_size],
             ['blk', args.block_ngram_repeat]
         ]
-        hparams = f'{".".join(f"{k}={v}" for k, v in hparams)}'
-
-        dest_prefix = guess_if_validation_or_test(args.source_file)
-        dest_prefix = os.path.join('experiments', args.experiment, 'gens', dest_prefix)
-        dest_prefix = os.path.join(dest_prefix, hparams)
-
+        dest_filename = f'{".".join(f"{k}={v}" for k, v in hparams)}'
     else:
-        dest_prefix = f'{dest_prefix}.step_{step}'
+        dest_filename = f'{args.dest_prefix}.step_{step}'
 
-    desc_dest = dest_prefix + '.desc'
-    plan_dest = dest_prefix + '.plan'
+    # Second, build the folder in which to write the file
+    dest_folder = guess_if_validation_or_test(args.source_file)
+    dest_folder = os.path.join('experiments',
+                               args.experiment,
+                               'gens',
+                               dest_folder,
+                               args.dest_folder)
+
+    if not os.path.exists(dest_folder):
+        os.makedirs(dest_folder)
+
+    desc_dest = os.path.join(dest_folder, f'{dest_filename}.desc')
+    plan_dest = os.path.join(dest_folder, f'{dest_filename}.plan')
 
     return desc_dest, plan_dest
 
@@ -116,6 +123,10 @@ def get_parser():
                        help='path to evaluation set file. Should be .jsonl')
     group.add_argument('--dest-prefix', dest='dest_prefix', default=None,
                        help='prefix for model outputs files')
+    group.add_argument('--dest-folder', dest='dest_folder', default='./',
+                       help='Folder where to place generated text. This folder'
+                            ' is always inside exp/gens/valid_or_test/ and you'
+                            ' do not have to include this.')
     group.add_argument('--experiment', dest='experiment', required=True,
                        help="Experiment folder (e.g. exp-1/)")
     group.add_argument('--log-file', dest='log_file',
