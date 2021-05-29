@@ -4,7 +4,7 @@ from collections import Counter
 import more_itertools
 import torch
 
-from onmt.rotowire.template import TemplatePlan
+from onmt.rotowire.template import TemplateFile
 from onmt.rotowire import RotowireConfig
 from onmt.utils.logging import logger
 
@@ -65,7 +65,7 @@ class RotowireParser:
                  (None, None, None) when there was an error
         """
         try:
-            return self._parse_example(jsonline)
+            return self._parse_example(idx, jsonline)
         except Exception as err:
             err_name = err.__class__.__name__
             if err_name not in self.error_logs:
@@ -93,7 +93,7 @@ class RotowireParser:
         if len(self.error_logs):
             logger.warn('')
 
-    def _parse_example(self, jsonline):
+    def _parse_example(self, idx, jsonline):
         raise NotImplementedError()
 
     def build_input_view(self, view_data):
@@ -164,7 +164,7 @@ class RotowireParser:
 
 class RotowireTrainingParser(RotowireParser):
 
-    def _parse_example(self, jsonline):
+    def _parse_example(self, idx, jsonline):
 
         inputs, outputs = jsonline['inputs'], jsonline['outputs']
 
@@ -332,25 +332,27 @@ class RotowireTrainingParser(RotowireParser):
 
 class RotowireInferenceParser(RotowireTrainingParser):
 
-    def __init__(self, config, template_file=None, guided_inference=True):
+    def __init__(self, config, guided_inference=True,
+                 template_file=None, dynamic_template=False):
         super().__init__(config=config)
-        self.template_file = template_file
+        self.dynamic_template = dynamic_template
         self.guided_inference = guided_inference
 
-        if self.template_file is not None and not self.guided_inference:
-            raise ValueError('Templates can only be used during GuidedInference')
+        self.template_file = None
+        if template_file is not None:
+            if not self.guided_inference:
+                raise ValueError('Templates can only be used during GuidedInference')
+            self.template_file = TemplateFile(
+                template_file, self.config, dynamic=self.dynamic_template)
 
-    def _parse_example(self, jsonline):
+    def _parse_example(self, idx, jsonline):
 
         inputs, outputs = jsonline['inputs'], jsonline['outputs']
 
         template = None
         if self.template_file is not None:
-            template = TemplatePlan(
-                self.template_file,  # formal templating language
-                [e['data']['PRIMARY'] for e in inputs],  # raw data
-                self.config  # config file
-            )
+            template = self.template_file.instantiate_template_from_game(
+                idx, [e['data']['PRIMARY'] for e in inputs])
 
         # What this function will return
         example = dict()

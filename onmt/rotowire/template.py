@@ -11,21 +11,50 @@ from onmt.rotowire.exceptions import (
 )
 
 
+class TemplateFile:
+    def __init__(self, filename, config=None, dynamic=False, sep='<sep>'):
+        self.dynamic = dynamic
+        self.config = config
+        if self.config is None:
+            logger.info('Loading default config.')
+            self.config = RotowireConfig.from_defaults()
+
+        self.sep = sep
+        with open(filename, mode="r", encoding='utf8') as f:
+            self.lines = [line.strip() for line in f if line.strip()]
+
+    @property
+    def static(self):
+        return not self.dynamic
+
+    def instantiate_template_from_game(self, tidx, raw_data):
+        """
+        tidx: index of the template to use
+        game: raw data containing all info from the game
+        """
+
+        if self.static:
+            return TemplatePlan(self.lines, raw_data, config=self.config)
+
+        return TemplatePlan(
+            [s.strip() for s in self.lines[tidx].split(self.sep)],
+            raw_data=raw_data, config=self.config
+        )
+
+
 class TemplatePlan:
     elab_pattern = re.compile('^<[a-z]+>')
     ent_pattern = re.compile(r'^(team|player)(\[(([a-zA-Z]+=[a-zA-Z0-9]+)(,\s*)?)+\])')
 
-    def __init__(self, filename, raw_data, config=None):
+    def __init__(self, sentences, raw_data, config=None):
         self.config = config
         if self.config is None:
             logger.info('Loading default config.')
             self.config = RotowireConfig.from_defaults()
 
         self.game = Game(raw_data)
-        with open(filename, mode="r", encoding='utf8') as f:
-            self.sentences = [self.read_line(idx, line)
-                              for idx, line in enumerate(f)
-                              if line.strip()]
+        self.sentences = [self.read_line(idx, sentence)
+                          for idx, sentence in enumerate(sentences)]
 
     def __len__(self):
         return len(self.sentences)

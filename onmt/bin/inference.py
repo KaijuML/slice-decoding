@@ -5,7 +5,6 @@ import multiprocessing as mp
 
 import configargparse as argparse
 import torch
-import math
 import os
 
 
@@ -88,6 +87,7 @@ def build_container(args, step, gpu):
     return Container(
         guided_inference=args.guided_inference,
         template_file=args.template_file,
+        dynamic_template=args.dynamic_template,
 
         source_file=args.source_file,
         model_path=model_path,
@@ -137,6 +137,9 @@ def get_parser():
                        action='store_true', help='Use the true plans or not.')
     group.add_argument('--template-file', dest='template_file', type=str,
                        help="path toward template specification file")
+    group.add_argument('--dynamic-template', dest='dynamic_template',
+                       action='store_true', help='set to true to use a different'
+                                                 'template for all examples.')
 
     # Model checkpoints, one or many
     ckpts = parser.add_mutually_exclusive_group(required=True)
