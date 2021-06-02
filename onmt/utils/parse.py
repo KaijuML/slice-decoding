@@ -31,20 +31,14 @@ class ArgumentParser(cfargparse.ArgumentParser):
     def update_model_opts(cls, opt):
         
         if isinstance(opt.encoder_layers, int) and opt.encoder_layers > 0:
-            logger.info('opt.encoder_layers is specified, over-riding'
-                        'low_level_layers and high_level_layers.')
             opt.low_level_layers = opt.encoder_layers
             opt.high_level_layers = opt.encoder_layers
             
         if isinstance(opt.encoder_heads, int) and opt.encoder_heads > 0:
-            logger.info('opt.encoder_heads is specified, over-riding'
-                        'low_level_heads and high_level_heads.')
             opt.low_level_heads = opt.encoder_heads
             opt.high_level_heads = opt.encoder_heads
             
         if isinstance(opt.encoder_glu_depth, int) and opt.encoder_glu_depth > 0:
-            logger.info('opt.encoder_glu_depth is specified, over-riding'
-                        'low_level_glu_depth and high_level_glu_depth.')
             opt.low_level_glu_depth = opt.encoder_glu_depth
             opt.high_level_glu_depth = opt.encoder_glu_depth
 
