@@ -47,6 +47,9 @@ class RotowireParser:
         '<time>': 'TIME',
     }
 
+    def __repr__(self):
+        return 'RotowireParser()'
+
     def __init__(self, config):
         if not isinstance(config, RotowireConfig):
             raise TypeError(f'Unknown config object: {type(config)}')
@@ -68,9 +71,12 @@ class RotowireParser:
             return self._parse_example(idx, jsonline)
         except Exception as err:
             err_name = err.__class__.__name__
+            err_msg = getattr(err, 'msg', '<no info>')
             if err_name not in self.error_logs:
-                self.error_logs[err_name] = list()
-            self.error_logs[err_name].append(idx)
+                self.error_logs[err_name] = dict()
+            if err_msg not in self.error_logs[err_name]:
+                self.error_logs[err_name][err_msg] = list()
+            self.error_logs[err_name][err_msg].append(idx)
             return [None] * 3
 
     def log_error_and_maybe_raise(self, do_raise=True):
@@ -79,15 +85,22 @@ class RotowireParser:
         if len(self.error_logs):
             logger.warn('')
 
-        for err_name, problematic_idxs in self.error_logs.items():
-            logger.warn(f'{err_name} was encountered at line'
-                        f'{"s" if len(problematic_idxs)>1 else ""} '
-                        f'{problematic_idxs if len(problematic_idxs)>1 else problematic_idxs[0]}')
+        for err_name, errors in self.error_logs.items():
+            logger.warn(f'{err_name} was encountered at the following line'
+                        f'{"s" if len(errors)>1 else ""}:')
+
+            for msg, idxs in errors.items():
+                logger.warn(f'{idxs}: {msg}')
+
         if len(self.error_logs):
             if do_raise:
                 raise RotowireParsingError(self.error_logs)
-            error_counts = [len(idxs) for _, idxs in self.error_logs.items()]
-            logger.warn(f'{sum(error_counts)} lines were ignored.')
+            error_count = sum([
+                len(idxs)
+                for _, errors in self.error_logs.items()
+                for _, idxs in errors.items()
+            ])
+            logger.warn(f'{error_count} lines were ignored.')
 
         # empty line to emphasize warnings
         if len(self.error_logs):
@@ -163,6 +176,9 @@ class RotowireParser:
 
 
 class RotowireTrainingParser(RotowireParser):
+
+    def __repr__(self):
+        return 'RotowireTrainingParser()'
 
     def _parse_example(self, idx, jsonline):
 
@@ -331,6 +347,17 @@ class RotowireTrainingParser(RotowireParser):
 
 
 class RotowireInferenceParser(RotowireTrainingParser):
+
+    def __repr__(self):
+
+        args = list()
+        if self.guided_inference:
+            args.append('guided=True')
+        if self.template_file is not None:
+            args.append(f'template={self.template_file.filename}')
+            args.append(f'dynamic_template={self.dynamic_template}')
+
+        return f'RotowireInferenceParser({", ".join(args)})'
 
     def __init__(self, config, guided_inference=True,
                  template_file=None, dynamic_template=False):

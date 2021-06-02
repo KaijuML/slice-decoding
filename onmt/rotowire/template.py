@@ -20,6 +20,7 @@ class TemplateFile:
             self.config = RotowireConfig.from_defaults()
 
         self.sep = sep
+        self.filename = filename
         with open(filename, mode="r", encoding='utf8') as f:
             self.lines = [line.strip() for line in f if line.strip()]
 

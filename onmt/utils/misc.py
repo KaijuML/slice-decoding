@@ -14,8 +14,8 @@ class Container:
     Dummy class that can be instantiated with arbitrary key-word arguments
     """
     def __init__(self, **kwargs):
-        self.__state = kwargs
-        self.__setstate__(self.__state)
+        # self.__state = kwargs
+        self.__setstate__(kwargs)
 
     def __setstate__(self, state):
         """Used by the python builtin multiprocessing library"""
@@ -24,7 +24,8 @@ class Container:
 
     def __getstate__(self):
         """Used by the python builtin multiprocessing library"""
-        return self.__state
+        # return self.__state
+        return self.__dict__
 
     def __getattr__(self, item):
         """Only called when item is not known to the container"""
@@ -36,9 +37,9 @@ class Container:
 
     def __repr__(self):
         try:
-            return f'Container({json.dumps(self.__dict__, indent=4)})'
+            return f'Container({json.dumps(self.__getstate__(), indent=4)})'
         except TypeError:
-            return f'Container(size={len(self.__dict__)})'
+            return f'Container(size={len(self.__getstate__())})'
 
 
 def format_device(device_or_device_id):

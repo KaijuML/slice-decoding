@@ -33,7 +33,7 @@ def maybe_upgrade_vocabs(vocabs: dict, config, logger):
     pytorch_vocabs = {
         vname: vocab
         for vname, vocab in vocabs.items()
-        if isinstance(vocab, TorchtextVocab)
+        if isinstance(vocab, TorchtextVocab) and not isinstance(vocab, Vocab)
     }
 
     if vnames := list(pytorch_vocabs):
