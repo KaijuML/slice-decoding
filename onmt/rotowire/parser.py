@@ -55,7 +55,6 @@ class RotowireParser:
             raise TypeError(f'Unknown config object: {type(config)}')
 
         self.config = config
-
         self.error_logs = dict()
 
     def parse_example(self, idx, jsonline):
@@ -77,6 +76,9 @@ class RotowireParser:
             if err_msg not in self.error_logs[err_name]:
                 self.error_logs[err_name][err_msg] = list()
             self.error_logs[err_name][err_msg].append(idx)
+
+            if isinstance(self, RotowireInferenceParser):
+                return None
             return [None] * 3
 
     def log_error_and_maybe_raise(self, do_raise=True):
@@ -86,8 +88,13 @@ class RotowireParser:
             logger.warn('')
 
         for err_name, errors in self.error_logs.items():
+            error_count = sum([
+                len(idxs)
+                for _, errors in self.error_logs.items()
+                for _, idxs in errors.items()
+            ])
             logger.warn(f'{err_name} was encountered at the following line'
-                        f'{"s" if len(errors)>1 else ""}:')
+                        f'{"s" if error_count>1 else ""}:')
 
             for msg, idxs in errors.items():
                 logger.warn(f'{idxs}: {msg}')

@@ -6,10 +6,7 @@ class DataAlreadyExistsError(Exception):
 
 class RotowireParsingError(Exception):
     def __init__(self, error_logs):
-        msg = '\n'
-        for err_name, idxs in error_logs.items():
-            msg += f'{err_name} at {idxs=}\n'
-        super().__init__(msg)
+        super().__init__('See error logs above.')
 
 
 class SliceMismatchError(Exception):
