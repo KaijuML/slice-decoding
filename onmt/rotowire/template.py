@@ -118,7 +118,7 @@ class Team:
                        'FG3_PCT', 'FT_PCT', 'WINS', 'LOSSES', 'GAME_NUMBER',
                        'ATTENDANCE']
 
-    litteral_attrs = ['FULL_NAME', 'TEAM_NAME', 'PLACE', 'STADIUM',
+    litteral_attrs = ['FULL_NAME', 'TEAM_NAME', 'TEAM_PLACE', 'STADIUM',
                       'STADIUM_LOCATION', 'DIVISION', 'CONFERENCE', 'DAY_NAME',
                       'MONTH_NAME', 'DAY_OF_MONTH']
 
@@ -174,10 +174,9 @@ class Player:
                        'MIN_FLOOR', 'OREB', 'PF', 'PTS', 'REB', 'STL', 'TOV']
 
     litteral_attrs = ['FULL_NAME', 'DAY_NAME', 'FIRST_NAME', 'LAST_NAME',
-                      'MONTH_NAME', 'TEAM_PLACE', 'TEAM_NAME',
-                      'WINNER', 'DOUBLE_TYPE']
+                      'MONTH_NAME', 'TEAM_PLACE', 'TEAM_NAME', 'DOUBLE_TYPE']
 
-    boolean_attrs = ['STARTER', 'HOME']
+    boolean_attrs = ['STARTER', 'HOME', 'WINNER']
 
     def __init__(self, raw_data, idx):
         self.raw_data = raw_data  # cloning purposes
