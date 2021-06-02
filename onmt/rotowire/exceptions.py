@@ -49,3 +49,33 @@ class UnderspecifiedTemplateError(Exception):
     Raised when specifiers are not enough to pick one and only one entity idx
     """
     pass
+
+
+class UnexpectedTeamData(Exception):
+    """
+    Usage: template.py
+    Raised when an unknown team info is encountered
+    """
+    def __init__(self, data):
+        self.msg = f'Unknown data: {data}'
+        super().__init__()
+
+
+class UnexpectedPlayerData(Exception):
+    """
+    Usage: template.py
+    Raised when an unknown player info is encountered
+    """
+    def __init__(self, data):
+        self.msg = f'Unknown data: {data}'
+        super().__init__()
+
+
+class SecondMatchGroupError(Exception):
+    """
+    Usage: template.py
+    Raised when a template line is wrongly specified
+    """
+    def __init__(self, entity, match_group):
+        self.msg = f'{entity=} {match_group=}'
+        super().__init__()

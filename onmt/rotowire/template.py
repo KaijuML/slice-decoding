@@ -7,7 +7,10 @@ from onmt.utils.logging import logger
 from onmt.rotowire.exceptions import (
     MissingPlayer,
     UnderspecifiedTemplateError,
-    ElaborationSpecificationError
+    ElaborationSpecificationError,
+    SecondMatchGroupError,
+    UnexpectedPlayerData,
+    UnexpectedTeamData
 )
 
 
@@ -102,7 +105,8 @@ class TemplatePlan:
             players = team.players
 
         second_match = self.ent_pattern.search(items[-1])
-        assert second_match.group(1) == 'player'
+        if second_match.group(1) != 'player':
+            raise SecondMatchGroupError(entity, second_match.group(1))
         specifiers = [s.strip().split('=') for s in second_match.group(2)[1:-1].split(',')]
         for key, value in specifiers:
             players = players.filter_by(key, value)
@@ -148,7 +152,8 @@ class Team:
             attrs[lattr.lower()] = data.pop(lattr.upper())
         for battr in self.boolean_attrs:
             attrs[battr.lower()] = data.pop(battr).lower() == 'true'
-        assert len(data) == 0
+        if len(data) > 0:
+            raise UnexpectedTeamData(data)
         return attrs
 
     @property
@@ -198,7 +203,8 @@ class Player:
             attrs[lattr.lower()] = data.pop(lattr)
         for battr in self.boolean_attrs:
             attrs[battr.lower()] = data.pop(battr).lower() == 'true'
-        assert len(data) == 0
+        if len(data) > 0:
+            raise UnexpectedPlayerData(data)
         return attrs
 
     @property
