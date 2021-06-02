@@ -347,7 +347,7 @@ class RotowireInferenceDataset(RotowireDataset):
         logger.info(f'Constructing {cls.__name__}, using data at: {filename}')
         if parser.template_file is not None:
             logger.info('Inference will be guided by template at: '
-                        f'{parser.template_file}')
+                        f'{parser.template_file.filename}')
         logger.info(config)
 
         examples = list()
@@ -377,10 +377,12 @@ class RotowireGuidedInferenceDataset(RotowireInferenceDataset):
 
     @classmethod
     def build_from_raw_json(cls, filename, config, vocabs,
-                            template_file=None, raise_on_error=True):
+                            template_file=None, dynamic_template=False,
+                            raise_on_error=True):
 
         parser = RotowireInferenceParser(config=config,
                                          template_file=template_file,
+                                         dynamic_template=dynamic_template,
                                          guided_inference=True)
 
         return cls._build_from_raw_json(filename=filename,

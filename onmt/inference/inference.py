@@ -100,7 +100,7 @@ class BaseInference:
                                      if_file_exists)
 
     def run(self, src_filename, template_file, desc_dest, plan_dest,
-            batch_size, if_file_exists='raise'):
+            batch_size, dynamic_template=False, if_file_exists='raise'):
 
         self.init_serializer(plan_dest, desc_dest, if_file_exists)
 
@@ -116,6 +116,7 @@ class BaseInference:
             if not self.is_guided_inference:
                 raise RuntimeError('Templates can only be used in GuidedInference')
             datakwargs['template_file'] = template_file
+            datakwargs['dynamic_template'] = dynamic_template
 
         dataset = dataset_cls.build_from_raw_json(src_filename, **datakwargs)
 
