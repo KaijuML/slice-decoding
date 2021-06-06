@@ -54,6 +54,8 @@ def main(args=None):
 
         for jidx, jsonline in enumerate(tqdm.tqdm(datafile, total=n_examples)):
             realized_template = parser.parse_example(jidx, json.loads(jsonline))
+            if realized_template is None:
+                parser.log_error_and_maybe_raise()
             for line in realized_template:
                 destfile.write(f'{line}\n')
             destfile.write('\n')
