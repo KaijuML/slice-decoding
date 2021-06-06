@@ -159,7 +159,7 @@ class FileIterable:
             def _read_line(line):
                 return json.loads(line)
         else:
-            raise ValueError(f'Unkown file format {fmt}')
+            raise ValueError(f'Unknown file format {fmt}')
 
         assert func is None
         with open(path, mode="r", encoding="utf8") as f:
