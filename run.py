@@ -1,3 +1,4 @@
+from onmt.bin.realize_templates import main as realize_templates
 from onmt.bin.preprocess import main as preprocess
 from onmt.bin.inference import main as inference
 from onmt.bin.train import main as train
@@ -22,6 +23,9 @@ if __name__ == '__main__':
                       help="Run training script")
     mode.add_argument("--inference", dest='inference', action='store_true',
                       help="Run inference script using a trained model")
+    mode.add_argument("--realize-templates", dest='realize_templates',
+                      action='store_true',
+                      help="Run inference script using a trained model")
 
     group = parser.add_argument_group('Help')
     group.add_argument('--help', dest='help', action='store_true')
@@ -34,5 +38,7 @@ if __name__ == '__main__':
         train(remaining_args)
     elif current_args.inference:
         inference(remaining_args)
+    elif current_args.realize_templates:
+        realize_templates(remaining_args)
     else:
         help_action(parser, current_args, None)

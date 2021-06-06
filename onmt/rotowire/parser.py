@@ -77,7 +77,7 @@ class RotowireParser:
                 self.error_logs[err_name][err_msg] = list()
             self.error_logs[err_name][err_msg].append(idx)
 
-            if isinstance(self, RotowireInferenceParser):
+            if isinstance(self, (RotowireInferenceParser, RotowireTemplateParser)):
                 return None
             return [None] * 3
 
@@ -353,7 +353,7 @@ class RotowireTrainingParser(RotowireParser):
         return example, main_vocab, cols_vocab
 
 
-class RotowireInferenceParser(RotowireTrainingParser):
+class RotowireInferenceParser(RotowireParser):
 
     def __repr__(self):
 
@@ -398,7 +398,7 @@ class RotowireInferenceParser(RotowireTrainingParser):
         # This is a counter on column names
         cols_vocab = Counter()
 
-        # Lists from input_sequence will be flattend and used model inputs.
+        # Lists from input_sequence will be flattened and used model inputs.
         # First list is cell values, second list is cell column names.
         input_sequence = [list(), list()]
 
@@ -568,3 +568,30 @@ class RotowireInferenceParser(RotowireTrainingParser):
         example['contexts'] = contexts
 
         return example
+
+
+class RotowireTemplateParser(RotowireParser):
+
+    def __init__(self, template_file, dynamic_template=False):
+        logger.info('Constructing RotowireTemplateParser (if you are not '
+                    'trying to realize a template file, this is a bug).')
+        logger.info('Creating default RotowireConfig.')
+        super().__init__(config=RotowireConfig.from_defaults())
+        self.template_file = TemplateFile(
+            template_file, self.config, dynamic=dynamic_template)
+
+    def _parse_example(self, idx, jsonline):
+
+        inputs, outputs = jsonline['inputs'], jsonline['outputs']
+
+        game_data = [e['data']['PRIMARY'] for e in inputs]
+        template = self.template_file.instantiate_template_from_game(idx, game_data)
+
+        realized_plan = list()
+        for elaboration, view_idxs in template:
+            realized_plan.append(elaboration + ' ' + ', '.join([
+                game_data[e]['FULL_NAME']
+                for e in view_idxs
+            ]))
+
+        return realized_plan
