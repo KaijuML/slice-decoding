@@ -1,3 +1,6 @@
+import os
+
+
 class DataAlreadyExistsError(Exception):
     def __init__(self, filename):
         msg = f'\n\t{filename}\n\tConsider using overwrite=True'
@@ -22,6 +25,16 @@ class UnknownElaborationError(Exception):
 class ContextTooLargeError(Exception):
     def __init__(self, sidx, ctx_size):
         super().__init__()
+
+
+class MissingTemplateFileError(Exception):
+    """
+    Usage: template.py
+    Raised when template_file is not found
+    """
+    def __init__(self, filename):
+        self.msg = f'{os.path.abspath(filename)} was not found'
+        super(MissingTemplateFileError, self).__init__(self.msg)
 
 
 class MissingPlayer(Exception):

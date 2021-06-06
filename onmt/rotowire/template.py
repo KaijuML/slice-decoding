@@ -1,10 +1,12 @@
 from collections.abc import Iterable
 import copy
 import re
+import os
 
 from onmt.rotowire import RotowireConfig
 from onmt.utils.logging import logger
 from onmt.rotowire.exceptions import (
+    MissingTemplateFileError,
     MissingPlayer,
     UnderspecifiedTemplateError,
     ElaborationSpecificationError,
@@ -16,6 +18,10 @@ from onmt.rotowire.exceptions import (
 
 class TemplateFile:
     def __init__(self, filename, config=None, dynamic=False, sep='<sep>'):
+
+        if not os.path.exists(filename):
+            raise MissingTemplateFileError(filename)
+
         self.dynamic = dynamic
         self.config = config
         if self.config is None:
