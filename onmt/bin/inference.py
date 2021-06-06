@@ -177,11 +177,12 @@ def get_parser():
 def single_main(args):
     configure_process(args.seed, args.gpu)
     inference = build_inference(args, logger)
-    inference.run(args.source_file,
-                  args.template_file,
-                  args.desc_dest,
-                  args.plan_dest,
-                  args.batch_size,
+    inference.run(src_filename=args.source_file,
+                  template_file=args.template_file,
+                  desc_dest=args.desc_dest,
+                  plan_dest=args.plan_dest,
+                  batch_size=args.batch_size,
+                  dynamic_template=args.dynamic_template,
                   if_file_exists='overwrite')
 
 
