@@ -9,12 +9,14 @@ import json
 import os
 
 
+_container_sentinel = object()
+
+
 class Container:
     """
     Dummy class that can be instantiated with arbitrary key-word arguments
     """
     def __init__(self, **kwargs):
-        # self.__state = kwargs
         self.__setstate__(kwargs)
 
     def __setstate__(self, state):
@@ -24,16 +26,29 @@ class Container:
 
     def __getstate__(self):
         """Used by the python builtin multiprocessing library"""
-        # return self.__state
         return self.__dict__
 
-    def __getattr__(self, item):
-        """Only called when item is not known to the container"""
+    def pop(self, item, default=_container_sentinel):
+        if not hasattr(self, item):
+            if default is not _container_sentinel:
+                return default
+            self._raise_unknown_attr(item)
+
+        value = getattr(self, item)
+        delattr(self, item)
+        return value
+
+    @staticmethod
+    def _raise_unknown_attr(item):
         raise RuntimeError(f'<{item}> is not a known attribute of this Container.'
                            f' This code uses Containers at places where I need '
                            f'an object that behaves like another object (e.g. '
                            f'a batch, a namespace, etc.). Find where this '
                            f'container is used in the code and fix this issue!')
+
+    def __getattr__(self, item):
+        """Only called when item is not known to the container"""
+        self._raise_unknown_attr(item)
 
     def __repr__(self):
         try:
