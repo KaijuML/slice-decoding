@@ -12,6 +12,14 @@ class Vocab(TorchtextVocab):
     def __contains__(self, item):
         return self.stoi.get(item, None) is not None
 
+    def __getitem__(self, item):
+        if isinstance(item, str):
+            return self.stoi[item]
+        elif isinstance(item, int):
+            return self.itos[item]
+        else:
+            raise ValueError(f'{type(item)=}')
+
 
 def maybe_upgrade_vocabs(vocabs: dict, config, logger):
 
@@ -57,6 +65,11 @@ def maybe_upgrade_vocabs(vocabs: dict, config, logger):
 
 class MultiOpen:
     """
+    Note: this class was coded before Python 3.10 which introduces the feature
+    natively. At the time of writing this note, Python 3.10 is not released
+    and pytorch doesn't even work with Python 3.9: we'll keep this class for a
+    while longer.
+
     Can open multiple files at once, without write nested `with Open`
     ARGS:
         *filenames: list of filename to open
