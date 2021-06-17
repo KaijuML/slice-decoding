@@ -168,6 +168,9 @@ def get_parser():
                             'per inference run. If multiple ckpts are evaluated'
                             'and multiple gpus are selected, then multiple runs'
                             'can be done in parallel.')
+    parser.add_argument('--ckpts-per-gpu', dest='ckpts_per_gpu', type=int,
+                        default=1, help="Number of runs on the same gpu")
+
 
     parser.add_argument('--seed', dest='seed', type=int, default=None)
 
@@ -193,21 +196,26 @@ def main(args=None):
 
     logger.init_logger(args.log_file)
 
-    if len(args.gpus) == 1:
+    if len(args.gpus) == 1 and args.ckpts_per_gpu == 1:
         logger.info(f'Running inference script on {args.gpu=}')
 
         for step in args.checkpoints:
             single_main(build_container(args, step, args.gpus[0]))
 
     else:
-        logger.info(f'Doing {len(args.gpus)} inference runs in parallel, on '
-                    f'gpus {", ".join(str(gpu) for gpu in args.gpus)}.')
+        group_size = len(args.gpus) * args.ckpts_per_gpu
+        logger.info(f'Doing {group_size} inference runs in parallel, dispatched'
+                    f' on gpus {", ".join(str(gpu) for gpu in args.gpus)}.')
 
-        for steps in grouped(args.checkpoints, len(args.gpus)):
+        for steps in grouped(args.checkpoints, group_size):
 
+            # We build a list of containers, one for each checkpoint.
+            # Checkpoints are dispatched to gpus, each gpu handling
+            # 'args.ckpts_per_gpu' checkpoints.
+            _gpus = [g for g in args.gpus for _ in range(args.ckpts_per_gpu)]
             containers = [
                 build_container(args, step, gpu)
-                for step, gpu in zip(steps, args.gpus)
+                for step, gpu in zip(steps, _gpus)
                 if step is not None
             ]
 
