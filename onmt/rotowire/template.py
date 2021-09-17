@@ -17,12 +17,15 @@ from onmt.rotowire.exceptions import (
 
 
 class TemplateFile:
-    def __init__(self, filename, config=None, dynamic=False, sep='<sep>'):
+    def __init__(self, filename, config=None, mode='static', sep='<sep>'):
 
         if not os.path.exists(filename):
             raise MissingTemplateFileError(filename)
 
-        self.dynamic = dynamic
+        if mode not in {'static', 'dynamic', 'pre-rendered'}:
+            raise ValueError(f'Unknown {mode=}!')
+
+        self.mode = mode
         self.config = config
         if self.config is None:
             logger.info('Loading default config.')
@@ -33,23 +36,22 @@ class TemplateFile:
         with open(filename, mode="r", encoding='utf8') as f:
             self.lines = [line.strip() for line in f if line.strip()]
 
-    @property
-    def static(self):
-        return not self.dynamic
-
     def instantiate_template_from_game(self, tidx, raw_data):
         """
         tidx: index of the template to use
         game: raw data containing all info from the game
         """
 
-        if self.static:
+        if self.mode == 'static':
             return TemplatePlan(self.lines, raw_data, config=self.config)
 
-        return TemplatePlan(
-            [s.strip() for s in self.lines[tidx].split(self.sep)],
-            raw_data=raw_data, config=self.config
-        )
+        if self.mode == 'dynamic':
+            return TemplatePlan(
+                [s.strip() for s in self.lines[tidx].split(self.sep)],
+                raw_data=raw_data, config=self.config
+            )
+
+        return RenderedTemplatePlan(self.lines)
 
 
 class TemplatePlan:
@@ -119,6 +121,11 @@ class TemplatePlan:
         if len(players) == 1:
             return players[0].idx
         raise UnderspecifiedTemplateError(entity)
+
+
+class RenderedTemplatePlan(TemplatePlan):
+    def __init__(self, sentences, *args, **kwargs):
+        self.sentences = [sent.strip() for sent in sentences if sent.strip()]
 
 
 class Team:

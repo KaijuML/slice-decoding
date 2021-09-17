@@ -377,12 +377,12 @@ class RotowireGuidedInferenceDataset(RotowireInferenceDataset):
 
     @classmethod
     def build_from_raw_json(cls, filename, config, vocabs,
-                            template_file=None, dynamic_template=False,
+                            template_file=None, template_mode='static',
                             raise_on_error=True):
 
         parser = RotowireInferenceParser(config=config,
                                          template_file=template_file,
-                                         dynamic_template=dynamic_template,
+                                         template_mode=template_mode,
                                          guided_inference=True)
 
         return cls._build_from_raw_json(filename=filename,

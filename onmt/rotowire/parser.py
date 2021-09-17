@@ -367,9 +367,11 @@ class RotowireInferenceParser(RotowireParser):
         return f'RotowireInferenceParser({", ".join(args)})'
 
     def __init__(self, config, guided_inference=True,
-                 template_file=None, dynamic_template=False):
+                 template_file=None, template_mode="static"):
         super().__init__(config=config)
-        self.dynamic_template = dynamic_template
+
+        assert template_mode in {'static', 'dynamic', 'pre-rendered'}
+        self.template_mode = template_mode
         self.guided_inference = guided_inference
 
         self.template_file = None
@@ -377,7 +379,7 @@ class RotowireInferenceParser(RotowireParser):
             if not self.guided_inference:
                 raise ValueError('Templates can only be used during GuidedInference')
             self.template_file = TemplateFile(
-                template_file, self.config, dynamic=self.dynamic_template)
+                template_file, self.config, mode=self.template_mode)
 
     def _parse_example(self, idx, jsonline):
 
