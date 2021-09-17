@@ -370,7 +370,7 @@ class RotowireInferenceParser(RotowireParser):
                  template_file=None, template_mode="static"):
         super().__init__(config=config)
 
-        assert template_mode in {'static', 'dynamic', 'pre-rendered'}
+        assert template_mode in {'static', 'dynamic', 'rendered'}
         self.template_mode = template_mode
         self.guided_inference = guided_inference
 

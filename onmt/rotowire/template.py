@@ -22,7 +22,7 @@ class TemplateFile:
         if not os.path.exists(filename):
             raise MissingTemplateFileError(filename)
 
-        if mode not in {'static', 'dynamic', 'pre-rendered'}:
+        if mode not in {'static', 'dynamic', 'rendered'}:
             raise ValueError(f'Unknown {mode=}!')
 
         self.mode = mode
@@ -45,13 +45,14 @@ class TemplateFile:
         if self.mode == 'static':
             return TemplatePlan(self.lines, raw_data, config=self.config)
 
-        if self.mode == 'dynamic':
-            return TemplatePlan(
-                [s.strip() for s in self.lines[tidx].split(self.sep)],
-                raw_data=raw_data, config=self.config
-            )
+        if self.mode == 'rendered':
+            return RenderedTemplatePlan(self.lines, raw_data, config=self.config)
 
-        return RenderedTemplatePlan(self.lines)
+        # other cases are dynamic templates
+        return TemplatePlan(
+            [s.strip() for s in self.lines[tidx].split(self.sep)],
+            raw_data=raw_data, config=self.config
+        )
 
 
 class TemplatePlan:
@@ -65,7 +66,7 @@ class TemplatePlan:
             self.config = RotowireConfig.from_defaults()
 
         self.game = Game(raw_data)
-        self.sentences = [self.read_line(idx, sentence)
+        self.sentences = [self.read_line(sentence)
                           for idx, sentence in enumerate(sentences)]
 
     def __len__(self):
@@ -77,7 +78,7 @@ class TemplatePlan:
     def __getitem__(self, item):
         return self.sentences[item]
 
-    def read_line(self, idx, line):
+    def read_line(self, line):
         elab = self.elab_pattern.search(line)
         if elab is None:
             raise ElaborationSpecificationError('No elaboration given.')
@@ -124,8 +125,31 @@ class TemplatePlan:
 
 
 class RenderedTemplatePlan(TemplatePlan):
-    def __init__(self, sentences, *args, **kwargs):
-        self.sentences = [sent.strip() for sent in sentences if sent.strip()]
+
+    pattern = re.compile('(<.+>)\s(.*)')
+
+    def __init__(self, sentences, raw_data, config=None):
+        super(RenderedTemplatePlan, self).__init__(sentences, raw_data, config)
+
+    def read_line(self, line):
+        match = self.pattern.search(line)
+
+        elab = match[1]
+        if elab not in self.config.elaboration_vocab:
+            raise ElaborationSpecificationError(f'Unknown elaboration: {elab}')
+
+        ents = list()
+        for name in match[2].split(', '):
+            if name == self.game.winning_team:
+                ents.append(0)
+            elif name == self.game.losing_team:
+                ents.append(1)
+            else:
+                for player in self.game.players:
+                    if name == player:
+                        ents.append(player.idx)
+
+        return elab, ents
 
 
 class Team:
@@ -179,6 +203,13 @@ class Team:
     def __getitem__(self, item):
         return self.attrs[item.lower()]
 
+    def __eq__(self, other):
+        if isinstance(other, Team):
+            return self.attrs == other.attrs
+        if isinstance(other, str):
+            return self.name == other
+        return False
+
     def __repr__(self):
         return f'Team({self.name})'
 
@@ -226,7 +257,7 @@ class Player:
 
     def __eq__(self, other):
         if isinstance(other, Player):
-            return self is other
+            return self.attrs == other.attrs
         if isinstance(other, str):
             return self.name == other
         return False
